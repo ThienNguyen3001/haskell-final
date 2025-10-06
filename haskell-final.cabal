@@ -1,5 +1,5 @@
 cabal-version:      2.4
-name:               haskell-game-server
+name:               haskell-final
 version:            0.1.0.0
 author:             Nguyễn Ngọc Thiện, Dương Quang Đông
 build-type:         Simple
