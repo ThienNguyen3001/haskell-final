@@ -2,7 +2,6 @@ cabal-version:      2.4
 name:               haskell-game-server
 version:            0.1.0.0
 author:             Nguyễn Ngọc Thiện, Dương Quang Đông
-maintainer:         gemini@example.com
 build-type:         Simple
 
 common common-options
@@ -32,10 +31,10 @@ executable server
     import:             common-options
     main-is:            Server.hs
     hs-source-dirs:     app
-    build-depends:      haskell-game-server
+    build-depends:      haskell-final
 
 executable client
     import:             common-options
     main-is:            Client.hs
     hs-source-dirs:     app
-    build-depends:      haskell-game-server
+    build-depends:      haskell-final
