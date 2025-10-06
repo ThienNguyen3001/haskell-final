@@ -11,5 +11,6 @@
 │   └── GameData.hs
 └── .gitignore
 └── haskell-game-server.cabal
+└── README.md
 ```
 ---
