@@ -14,3 +14,8 @@
 └── README.md
 ```
 ---
+
+Cụ thể:
+* ```GameData.hs```: định nghĩa tất cả các kiểu dữ liệu cốt lõi của game, gồm có trạng thái game, các đối tượng trong game, các thông điệp giao tiếp giữa client server. (Đông)
+* ```Server.hs```: khởi tạo server, lắng nghe kết nối, quản lý các client, chạy vòng lặp game trong một luồng riêng biệt, và phát đi các cập nhật trạng thái. (Thiện)
+* ```Client```: kết nối, gửi lệnh và nhận cập nhật từ server. (Đông)
