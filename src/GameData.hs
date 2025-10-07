@@ -1,0 +1,83 @@
+module GameData where
+
+-- | Vị trí 2D trong không gian game
+data Position = Position
+  { posX :: Float
+  , posY :: Float
+  } deriving (Show, Eq)
+
+-- | Các hành động có thể thực hiện (player/enemy)
+data Action
+  = MoveUp
+  | MoveDown
+  | MoveLeft
+  | MoveRight
+  | Shoot
+  | Idle
+  deriving (Show, Eq)
+
+-- | Trạng thái sinh tồn (player/enemy)
+data LifeState = Alive | Dead
+  deriving (Show, Eq)
+
+-- | Net: Định danh người chơi
+data PlayerID 
+  = Player1 
+  | Player2
+  deriving (Show, Eq, Ord)
+
+-- | Dữ liệu cho người chơi
+data Player = Player
+  { playerID       :: PlayerID 
+  , playerPos      :: Position     -- vị trí (x, y)
+  , playerLives    :: Int          -- số mạng
+  , playerScore    :: Int          -- điểm
+  , playerDeaths   :: Int          -- số lần chết
+  , playerAction   :: Action       -- hành động hiện tại
+  } deriving (Show, Eq)
+
+-- | Loại kẻ địch
+data EnemyType 
+  = SmallEnemy 
+  | BigEnemy
+  deriving (Show, Eq)
+
+-- | Dữ liệu cho kẻ địch
+data Enemy = Enemy
+  { enemyPos      :: Position
+  , enemyType     :: EnemyType
+  , enemyAction   :: Action
+  , enemyState    :: LifeState
+  , enemyHP       :: Int
+  } deriving (Show, Eq)
+
+-- | Chủ sở hữu viên đạn
+data Owner 
+  = PlayerOwned 
+  | EnemyOwned
+  deriving (Show, Eq)
+
+-- | Dữ liệu cho viên đạn
+data Bullet = Bullet
+  { bulletPos   :: Position
+  , bulletOwner :: Owner
+  } deriving (Show, Eq)
+
+-- | Dữ liệu cho vật phẩm
+data Item = Item
+  { itemPos  :: Position
+  , itemHeal :: Int
+  } deriving (Show, Eq)
+
+-- | Dữ liệu tổng hợp trạng thái toàn bộ game
+data GameState = GameState
+  { gamePlayer       :: [Player]        -- người chơi chính
+  , gameEnemies      :: [Enemy]         -- danh sách kẻ địch
+  , gameItems        :: [Item]          -- danh sách vật phẩm
+  , gameLevel        :: Int             -- số thứ tự màn
+  , gameEnemiesLeft  :: Int             -- số lượng kẻ địch còn lại
+  , gameEnemiesSpawned :: Int           -- số lượng đã sinh ra
+  , gameWins          :: Int            -- số lần thắng
+  , gameLosses        :: Int            -- số lần thua
+  , isShooting         :: Bool          -- có đang bắn không
+  } deriving (Show, Eq)
