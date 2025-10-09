@@ -9,6 +9,8 @@
 │
 ├── src                          
 │   └── GameData.hs
+|   └── GameMes.hs
+|   └── GameMesBin.hs
 └── .gitignore
 └── haskell-game-server.cabal
 └── README.md

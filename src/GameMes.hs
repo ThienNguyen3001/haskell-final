@@ -1,5 +1,10 @@
+{-# LANGUAGE DeriveGeneric #-}
+
 module GameMes where
+
 import GameData (Position, Action, GameState, PlayerID)
+import GHC.Generics (Generic)
+import Data.Binary (Binary)
 
 ------------------------------------------------------------
 -- THÔNG ĐIỆP TỪ CLIENT GỬI LÊN SERVER
@@ -13,8 +18,9 @@ data ClientMessage
   | PlayerHit PlayerID                  -- báo bị trúng đạn
   | PlayerRespawn PlayerID              -- hồi sinh
   | PlayerQuit PlayerID                 -- rời khỏi game
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic)
 
+instance Binary ClientMessage 
 ------------------------------------------------------------
 -- THÔNG ĐIỆP TỪ SERVER GỬI XUỐNG CLIENT
 ------------------------------------------------------------
@@ -27,8 +33,9 @@ data ServerMessage
   | PlayerJoined PlayerID               -- thông báo có người mới vào
   | PlayerLeft PlayerID                 -- thông báo người chơi rời khỏi game
   | GameOver Bool                       -- thông báo kết thúc trò chơi (True = thắng, False = thua)
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic)
 
+instance Binary ServerMessage 
 ------------------------------------------------------------
 -- THÔNG ĐIỆP KẾT NỐI HỆ THỐNG (tuỳ chọn) -- Nếu không cần thiết có thể xóa
 ------------------------------------------------------------
@@ -37,4 +44,6 @@ data ServerMessage
 data NetworkMessage
   = FromClient ClientMessage
   | FromServer ServerMessage
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic)
+
+instance Binary NetworkMessage
