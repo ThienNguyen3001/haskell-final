@@ -1,11 +1,11 @@
-module Client where
+module Main where
 
 import Network.Socket
 import Network.Socket.ByteString (send, recv)
 import qualified Data.ByteString.Lazy as LBS
 import Data.Binary (encode, decode)
 import Control.Concurrent (forkIO)
-import Control.Monad (forever)
+import Control.Monad (forever, void)
 import Control.Concurrent.MVar
 
 import GameMes
@@ -27,7 +27,8 @@ runClient host port = withSocketsDo $ do
     -- PHASE 2: SEND MESSAGE
     putStrLn "Sending JoinGame message..."
     let joinMsg = JoinGame Player1 -- Giả sử client này là Player1
-    send sock (LBS.toStrict $ encode joinMsg) -- Serialize và gửi đi
+    -- SỬA LỖI 2: Thêm '_ <-' để xử lý cảnh báo
+    _ <- send sock (LBS.toStrict $ encode joinMsg)
     
     putStrLn "Client is running. Press Enter to quit."
     _ <- getLine
@@ -38,20 +39,17 @@ runClient host port = withSocketsDo $ do
 -- | Vòng lặp liên tục nhận và xử lý tin nhắn từ server
 receiverLoop :: Socket -> MVar GameState -> IO ()
 receiverLoop sock gameStateMVar = forever $ do
-    byteString <- recv sock 1024 -- max 1024 bytes
+    byteString <- recv sock 1024
     
-    -- Deserialize
     let serverMsg = decode (LBS.fromStrict byteString) :: ServerMessage
 
     case serverMsg of
-        -- Khi server chào mừng hoặc cập nhật, ghi đè GameState trong MVar
         Welcome _ newGameState -> do
             putStrLn "Received Welcome! Updating state."
-            _ <- swapMVar gameStateMVar newGameState -- swapMVar an toàn hơn
+            void $ swapMVar gameStateMVar newGameState
         UpdateGame newGameState -> do
-            putStrLn "Received game update." -- Để debug, có thể bỏ để đỡ spam console
-            _ <- swapMVar gameStateMVar newGameState
-        -- Xử lý các thông điệp khác nếu cần
+            -- putStrLn "Received game update." -- Có thể bỏ comment để debug
+            void $ swapMVar gameStateMVar newGameState
         PlayerJoined pId -> putStrLn $ show pId ++ " has joined."
         PlayerLeft pId -> putStrLn $ show pId ++ " has left."
         GameOver isWin -> putStrLn $ "Game Over! Win: " ++ show isWin
@@ -60,6 +58,6 @@ receiverLoop sock gameStateMVar = forever $ do
 -- | Hàm main để chạy client
 main :: IO ()
 main = do
-    let serverIP = "127.0.0.1" -- Địa chỉ IP của server (localhost)
-    let serverPort = "8080"      -- Cổng của server
+    let serverIP = "127.0.0.1"
+    let serverPort = "8080"
     runClient serverIP serverPort
