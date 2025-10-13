@@ -21,6 +21,7 @@ data ClientMessage
   deriving (Show, Eq, Generic)
 
 instance Binary ClientMessage 
+
 ------------------------------------------------------------
 -- THÔNG ĐIỆP TỪ SERVER GỬI XUỐNG CLIENT
 ------------------------------------------------------------

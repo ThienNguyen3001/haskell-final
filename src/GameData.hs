@@ -94,6 +94,7 @@ data GameState = GameState
   , gameEnemiesSpawned :: Int           -- số lượng đã sinh ra
   , gameWins          :: Int            -- số lần thắng
   , gameLosses        :: Int            -- số lần thua
+  , gameBullets        :: [Bullet]           -- số lượng đạn
   , isShooting         :: Bool          -- có đang bắn không
   } deriving (Show, Eq, Generic)
 instance Binary GameState
