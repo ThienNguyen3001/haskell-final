@@ -1,5 +1,3 @@
--- app/Server.hs
-
 module Main where
 
 import Control.Concurrent (forkIO, threadDelay)
