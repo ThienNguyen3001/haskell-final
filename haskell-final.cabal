@@ -21,11 +21,12 @@ common common-options
         stm,
         parallel,
         random,
-        gloss
+        gloss, 
+        gloss-juicy
 
 library
     import:             common-options
-    exposed-modules:    GameData, GameMes
+    exposed-modules:    GameData, GameMes, GameRender
     hs-source-dirs:     src
 
 executable server
