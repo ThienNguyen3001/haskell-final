@@ -2,7 +2,7 @@ module Main where
 
 -- Gloss & System
 import Graphics.Gloss
-import Graphics.Gloss.Juicy
+import Graphics.Gloss.Juicy (loadJuicyPNG)
 import Graphics.Gloss.Interface.Pure.Game
 import System.Exit (exitSuccess)
 import System.IO.Unsafe (unsafePerformIO)
