@@ -75,7 +75,13 @@ main = withSocketsDo $ do
 
 -- Hàm load ảnh phụ trợ để xử lý lỗi
 loadJuicyPNG_ :: FilePath -> IO Picture
-loadJuicyPNG_ path = loadJuicyPNG path >>= maybe (fail $ "Failed to load: " ++ path) return
+loadJuicyPNG_ path = do
+    maybePic <- loadJuicyPNG path
+    case maybePic of
+        Just pic -> return pic
+        Nothing  -> do
+            putStrLn $ "Cannot load image: " ++ path
+            return blank
 
 ----------------------------------------------------
 -- CÁC HÀM CỦA GLOSS - GỌN GÀNG HƠN
