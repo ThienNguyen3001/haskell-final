@@ -21,7 +21,7 @@ common common-options
         stm,
         parallel,
         random,
-        gloss, 
+        gloss,
         gloss-juicy
 
 library
@@ -40,3 +40,4 @@ executable client
     main-is:            Client.hs
     hs-source-dirs:     app
     build-depends:      haskell-final
+    buildable:          True
