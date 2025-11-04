@@ -35,14 +35,15 @@ data PlayerID
   deriving (Show, Eq, Ord, Generic)
 instance Binary PlayerID
 
--- | Dữ liệu cho người chơi
+-- | Dữ liệu cho người chơi (ĐÃ SỬA)
 data Player = Player
   { playerID       :: PlayerID 
   , playerPos      :: Position     -- vị trí (x, y)
   , playerLives    :: Int          -- số mạng
   , playerScore    :: Int          -- điểm
   , playerDeaths   :: Int          -- số lần chết
-  , playerAction   :: Action       -- hành động hiện tại
+  , playerAction   :: Action       -- hành động di chuyển hiện tại (Idle, MoveUp,...)
+  , playerWantsToShoot :: Bool     -- cờ báo hiệu muốn bắn (do 'Shoot' là sự kiện 1 lần)
   } deriving (Show, Eq, Generic)
 instance Binary Player
 
@@ -96,6 +97,6 @@ data GameState = GameState
   , gameWins          :: Int            -- số lần thắng
   , gameLosses        :: Int            -- số lần thua
   , gameBullets        :: [Bullet]           -- số lượng đạn
-  , isShooting         :: Bool          -- có đang bắn không
+  , isShooting         :: Bool          -- có đang bắn không (CÓ THỂ XÓA NẾU KHÔNG DÙNG)
   } deriving (Show, Eq, Generic)
 instance Binary GameState

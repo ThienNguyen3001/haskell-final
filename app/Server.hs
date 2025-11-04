@@ -2,13 +2,13 @@ module Main where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
-import Control.Monad (forever, forM_)
+import Control.Monad (forever, forM_, void)
 import qualified Data.Map as Map
 import Data.Binary (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
 import Network.Socket
 import Network.Socket.ByteString (recvFrom, sendTo)
-import Data.Maybe (mapMaybe)
+import Data.Maybe (mapMaybe, fromMaybe)
 
 import GameData
 import GameMes
@@ -34,6 +34,142 @@ entitySize  = 20.0  -- Kích thước va chạm (giả định)
 screenWidth, screenHeight :: Float
 screenWidth = 800
 screenHeight = 600
+
+-- | Trạng thái game ban đầu
+initialGameState :: GameState
+initialGameState = GameState [] [] [] 0 0 0 0 0 [] False
+
+-- | Hàm main của Server
+main :: IO ()
+main = withSocketsDo $ do
+    putStrLn "Starting server on port 8080..."
+
+    -- 1. Thiết lập địa chỉ
+    addrInfos <- getAddrInfo (Just (defaultHints { addrFlags = [AI_PASSIVE], addrSocketType = Datagram })) Nothing (Just "8080")
+    let serverAddr = head addrInfos
+
+    -- 2. Tạo Socket
+    sock <- socket (addrFamily serverAddr) Datagram defaultProtocol
+    bind sock (addrAddress serverAddr)
+
+    -- 3. Khởi tạo Server State
+    gsTVar <- newTVarIO initialGameState
+    clientsTVar <- newTVarIO Map.empty
+    let state = ServerState gsTVar clientsTVar
+
+    putStrLn "Server started. Listening for clients..."
+
+    -- 4. Chạy luồng nhận tin nhắn và luồng game loop
+    _ <- forkIO $ receiverLoop sock state
+    _ <- forkIO $ gameLoop sock state
+
+    -- Giữ luồng chính tồn tại
+    forever $ threadDelay (10 * 1000 * 1000)
+
+-- | Luồng nhận tin nhắn từ các client
+receiverLoop :: Socket -> ServerState -> IO ()
+receiverLoop sock state = forever $ do
+    (byteString, clientAddr) <- recvFrom sock 1024
+    let clientMsg = decode (LBS.fromStrict byteString) :: ClientMessage
+    
+    -- Xử lý tin nhắn
+    case clientMsg of
+        JoinGame pID -> handleJoinGame sock state pID clientAddr
+        PlayerAction pID action -> handlePlayerAction state pID action
+        PlayerQuit pID -> handlePlayerQuit state pID
+        _ -> return ()
+
+-- | Luồng chạy logic game (khoảng 60 FPS)
+gameLoop :: Socket -> ServerState -> IO ()
+gameLoop sock state = forever $ do
+    let deltaT = 0.016 -- 16ms
+    
+    -- 1. Chạy logic game và cập nhật state
+    (updatedGameState, newBullets) <- atomically $ do
+        gs <- readTVar (gameState state)
+        let (tickedGs, bullets) = runGameLogic deltaT gs
+        
+        -- Thêm đạn mới vào state cho tick sau
+        let finalGs = tickedGs { gameBullets = gameBullets tickedGs ++ bullets }
+        writeTVar (gameState state) finalGs
+        return (finalGs, bullets)
+
+    -- 2. Gửi state mới cho tất cả client
+    clientMap <- atomically $ readTVar (clients state)
+    let updateMsg = UpdateGame updatedGameState
+    let encodedMsg = LBS.toStrict $ encode updateMsg
+    
+    forM_ (Map.elems clientMap) $ \addr ->
+        sendTo sock encodedMsg addr
+
+    -- 3. Delay
+    threadDelay (floor (deltaT * 1000 * 1000))
+
+-- | Xử lý khi client tham gia (SỬA LOGIC NẶNG)
+handleJoinGame :: Socket -> ServerState -> PlayerID -> SockAddr -> IO ()
+handleJoinGame sock state pID addr = do
+    putStrLn $ "Player " ++ show pID ++ " joined from " ++ show addr
+
+    -- 1. Xác định vị trí xuất hiện dựa trên ID
+    let startPos = if pID == Player1 
+                   then Position (-100) (-250) -- Player1 bên trái
+                   else Position 100 (-250)   -- Player2 bên phải
+
+    let newPlayer = Player pID startPos 3 0 0 Idle False
+
+    -- 2. Thêm vào state và map
+    (welcomeState, newCount) <- atomically $ do
+        -- Thêm client vào map (ghi đè nếu đã tồn tại)
+        clientsMap <- readTVar (clients state)
+        let newClientsMap = Map.insert pID addr clientsMap
+        writeTVar (clients state) newClientsMap
+
+        -- Cập nhật danh sách người chơi
+        gs <- readTVar (gameState state)
+        -- Lọc ra tất cả người chơi KHÁC pID hiện tại
+        let otherPlayers = filter ((/= pID) . playerID) (gamePlayer gs)
+        -- Thêm người chơi mới (hoặc đã cập nhật) vào danh sách
+        let finalPlayers = newPlayer : otherPlayers
+        
+        let newGs = gs { gamePlayer = finalPlayers }
+        writeTVar (gameState state) newGs
+        
+        return (newGs, Map.size newClientsMap)
+
+    putStrLn $ "Total clients: " ++ show newCount
+    -- 3. Gửi tin nhắn chào mừng (Welcome)
+    let welcomeMsg = Welcome pID welcomeState
+    void $ sendTo sock (LBS.toStrict $ encode welcomeMsg) addr
+
+-- | Xử lý khi client thoát
+handlePlayerQuit :: ServerState -> PlayerID -> IO ()
+handlePlayerQuit state pID = do
+    putStrLn $ "Player " ++ show pID ++ " quit."
+    atomically $ do
+        -- Xóa client
+        clientsMap <- readTVar (clients state)
+        writeTVar (clients state) (Map.delete pID clientsMap)
+        
+        -- Xóa player
+        gs <- readTVar (gameState state)
+        let updatedPlayers = filter ((/= pID) . playerID) (gamePlayer gs)
+        writeTVar (gameState state) (gs { gamePlayer = updatedPlayers })
+
+-- | Xử lý hành động của player
+handlePlayerAction :: ServerState -> PlayerID -> Action -> IO ()
+handlePlayerAction state pID action = atomically $ do
+    gs <- readTVar (gameState state)
+    
+    let updateFunc p = if playerID p == pID
+                       then case action of
+                                -- Nếu là Shoot, bật cờ 'WantsToShoot'
+                                Shoot -> p { playerWantsToShoot = True }
+                                -- Nếu là hành động khác, cập nhật 'playerAction' (cho di chuyển)
+                                _     -> p { playerAction = action }
+                       else p
+                       
+    let newPlayers = map updateFunc (gamePlayer gs)
+    writeTVar (gameState state) (gs { gamePlayer = newPlayers })
 
 -- | Hàm chính chạy logic game
 -- | Trả về (GameState mới, Đạn vừa được bắn)
@@ -74,32 +210,34 @@ updatePlayers deltaT players =
 -- | Cập nhật cho từng người chơi
 updatePlayer :: Float -> Player -> (Player, [Bullet])
 updatePlayer deltaT p =
-    let (dx, dy) = case playerAction p of
+    let 
+        -- 1. Xử lý di chuyển (dựa trên playerAction)
+        (dx, dy) = case playerAction p of
             MoveUp    -> (0, playerSpeed * deltaT)
             MoveDown  -> (0, -playerSpeed * deltaT)
             MoveLeft  -> (-playerSpeed * deltaT, 0)
             MoveRight -> (playerSpeed * deltaT, 0)
-            _         -> (0, 0) -- Bao gồm cả Shoot và Idle
+            _         -> (0, 0) 
 
         (Position x y) = playerPos p
         newPos = Position (clamp (x + dx) (-screenWidth/2) (screenWidth/2))
                           (clamp (y + dy) (-screenHeight/2) (screenHeight/2))
 
-        -- Tạo đạn nếu hành động là Shoot (gắn thông tin người bắn)
-        newBullet = case playerAction p of
-            Shoot -> [Bullet (Position x (y + entitySize)) PlayerOwned (Just $ playerID p)]
-            _     -> []
+        -- 2. Tạo đạn nếu cờ 'wantsToShoot' được bật
+        newBullet = if playerWantsToShoot p
+                    then [Bullet (Position x (y + entitySize)) PlayerOwned (Just $ playerID p)]
+                    else []
 
-        -- Nếu là bắn, reset về Idle (để không bắn liên tục)
-        finalAction = if playerAction p == Shoot then Idle else playerAction p
+        -- 3. Reset cờ 'wantsToShoot' (để không bắn liên tục)
+        finalWantsToShoot = False
 
-    in (p { playerPos = newPos, playerAction = finalAction }, newBullet)
+    in (p { playerPos = newPos, playerWantsToShoot = finalWantsToShoot }, newBullet)
 
 -- | Cập nhật kẻ địch
 updateEnemies :: Float -> [Enemy] -> ([Enemy], [Bullet])
 updateEnemies deltaT enemies =
     let updatedEnemies = map (updateEnemy deltaT) enemies
-        newBullets = []
+        newBullets = [] -- Kẻ địch chưa biết bắn
     in (updatedEnemies, newBullets)
 
 updateEnemy :: Float -> Enemy -> Enemy
@@ -128,18 +266,16 @@ updateBullet deltaT b =
 -- | Xử lý va chạm
 handleCollisions :: GameState -> GameState
 handleCollisions gs =
-    let players = gamePlayer gs
+    let 
+        players = gamePlayer gs
         enemies = gameEnemies gs
         bullets = gameBullets gs
 
         playerBullets = filter ((== PlayerOwned) . bulletOwner) bullets
-        enemyBullets  = filter ((== EnemyOwned) . bulletOwner) bullets
+        enemyBullets  = filter ((== EnemyOwned) . bulletOwner) bullets 
 
-    -- 1. Đạn người chơi vs Kẻ địch
-    tripleHit = checkBulletEnemyCollisions playerBullets enemies
-    hitEnemies = fst3 tripleHit
-    hitPlayerBullets = snd3 tripleHit
-    remainingPlayerBullets = thd3 tripleHit
+        -- 1. Đạn người chơi vs Kẻ địch
+        (hitEnemies, hitPlayerBullets, remainingPlayerBullets) = checkBulletEnemyCollisions playerBullets enemies
 
         -- 2. Đạn kẻ địch vs Người chơi
         (hitPlayers, remainingEnemyBullets) = checkBulletPlayerCollisions enemyBullets players
@@ -158,12 +294,11 @@ handleCollisions gs =
         -- Lọc ra người chơi còn sống
         alivePlayers = filter ((> 0) . playerLives) updatedPlayers
 
-        -- Cập nhật điểm: gán điểm cho người bắn tương ứng với mỗi kẻ địch trúng
-    -- Chỉ tính từ các viên đạn thực sự trúng kẻ địch
-    shooterHits = foldr (\b acc -> case bulletShooter b of
+        -- Cập nhật điểm
+        shooterHits = foldr (\b acc -> case bulletShooter b of
                       Just pid -> Map.insertWith (+) pid 1 acc
                       Nothing  -> acc)
-                Map.empty hitPlayerBullets
+                    Map.empty hitPlayerBullets
 
         -- Áp dụng điểm cho người chơi sống
         scoredPlayers = map (\p -> let add = Map.findWithDefault 0 (playerID p) shooterHits
@@ -173,6 +308,7 @@ handleCollisions gs =
           , gameEnemies = updatedEnemies
           , gameBullets = remainingPlayerBullets ++ remainingEnemyBullets
           }
+
 
 -- | Kiểm tra va chạm đạn người chơi và kẻ địch
 checkBulletEnemyCollisions :: [Bullet] -> [Enemy] -> ([Enemy], [Bullet], [Bullet])

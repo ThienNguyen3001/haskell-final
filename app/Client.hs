@@ -6,6 +6,7 @@ import Graphics.Gloss.Juicy
 import Graphics.Gloss.Interface.Pure.Game
 import System.Exit (exitSuccess)
 import System.IO.Unsafe (unsafePerformIO)
+import System.Environment (getArgs) -- <-- THÊM DÒNG NÀY
 
 -- Network & Concurrency
 import Network.Socket
@@ -56,12 +57,19 @@ main = withSocketsDo $ do
     gameStateMVar <- newMVar initialGameState
     _ <- forkIO $ receiverLoop sock gameStateMVar
 
-    -- 4. GỬI YÊU CẦU THAM GIA GAME
-    let pID = Player1 
+    -- 4. XÁC ĐỊNH PLAYERID TỪ THAM SỐ DÒNG LỆNH (SỬA LOGIC NẶNG)
+    args <- getArgs
+    let pID = case args of
+                ("player2":_) -> Player2
+                _             -> Player1 -- Mặc định là Player1
+    
+    putStrLn $ "Attempting to join as: " ++ show pID
+
+    -- 5. GỬI YÊU CẦU THAM GIA GAME
     let joinMsg = JoinGame pID
     _ <- send sock (LBS.toStrict $ encode joinMsg)
     
-    -- 5. KHỞI CHẠY VÒNG LẶP GAME CỦA GLOSS
+    -- 6. KHỞI CHẠY VÒNG LẶP GAME CỦA GLOSS
     let displayMode = InWindow "Haskell Shooter" (800, 600) (100, 100)
     let initialState = ClientState initialGameState sock pID sprites    
 
@@ -72,7 +80,7 @@ main = withSocketsDo $ do
         60
         initialState
         drawHandler
-        inputHandler -- (<<<< HÀM NÀY ĐÃ ĐƯỢC CẬP NHẬT)
+        inputHandler
         (updateHandler gameStateMVar)
 
 -- Hàm load ảnh phụ trợ để xử lý lỗi
@@ -80,14 +88,14 @@ loadJuicyPNG_ :: FilePath -> IO Picture
 loadJuicyPNG_ path = loadJuicyPNG path >>= maybe (fail $ "Failed to load: " ++ path) return
 
 ----------------------------------------------------
--- CÁC HÀM CỦA GLOSS - GỌN GÀNG HƠN
+-- CÁC HÀM CỦA GLOSS
 ----------------------------------------------------
 
 -- 1. HÀM VẼ
 drawHandler :: ClientState -> Picture
 drawHandler state = render (gameSprites state) (gameState state)
 
--- 2. HÀM INPUT (<<<<<--- CẬP NHẬT LOGIC LỚN Ở ĐÂY)
+-- 2. HÀM INPUT
 inputHandler :: Event -> ClientState -> ClientState
 inputHandler event state =
     let sock = networkSocket state
