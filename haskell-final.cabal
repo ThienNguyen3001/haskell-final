@@ -19,10 +19,9 @@ common common-options
         binary,
         containers,
         stm,
-        parallel,
-        random,
-        gloss, 
-        gloss-juicy
+    parallel,
+    random,
+    gloss
 
 library
     import:             common-options
@@ -40,3 +39,4 @@ executable client
     main-is:            Client.hs
     hs-source-dirs:     app
     build-depends:      haskell-final
+    buildable:          False

@@ -1,4 +1,4 @@
-module Client where
+module Main where
 
 -- Gloss & System
 import Graphics.Gloss
@@ -50,18 +50,20 @@ main = withSocketsDo $ do
     putStrLn "Network socket connected."
 
     -- 3. KHỞI TẠO MVAR VÀ LUỒNG MẠNG
-    let initialGameState = GameState [] [] [] [] 0 0 0 0 0 False
+    --                Player Enemy Item Level Left Spwn Wins Loss Bullet Shoot
+    let initialGameState = GameState [] [] [] 0 0 0 0 0 [] False
+    
     gameStateMVar <- newMVar initialGameState
     _ <- forkIO $ receiverLoop sock gameStateMVar
 
     -- 4. GỬI YÊU CẦU THAM GIA GAME
-    let myPlayerID = Player1
-    let joinMsg = JoinGame myPlayerID
+    let pID = Player1 
+    let joinMsg = JoinGame pID
     _ <- send sock (LBS.toStrict $ encode joinMsg)
     
     -- 5. KHỞI CHẠY VÒNG LẶP GAME CỦA GLOSS
     let displayMode = InWindow "Haskell Shooter" (800, 600) (100, 100)
-    let initialState = ClientState initialGameState sock myPlayerID sprites    -- Sử dụng 'sock' đã được kết nối ở trên
+    let initialState = ClientState initialGameState sock pID sprites    
 
     putStrLn "Starting game loop..."
     play
@@ -70,7 +72,7 @@ main = withSocketsDo $ do
         60
         initialState
         drawHandler
-        inputHandler
+        inputHandler -- (<<<< HÀM NÀY ĐÃ ĐƯỢC CẬP NHẬT)
         (updateHandler gameStateMVar)
 
 -- Hàm load ảnh phụ trợ để xử lý lỗi
@@ -85,7 +87,7 @@ loadJuicyPNG_ path = loadJuicyPNG path >>= maybe (fail $ "Failed to load: " ++ p
 drawHandler :: ClientState -> Picture
 drawHandler state = render (gameSprites state) (gameState state)
 
--- 2. HÀM INPUT
+-- 2. HÀM INPUT (<<<<<--- CẬP NHẬT LOGIC LỚN Ở ĐÂY)
 inputHandler :: Event -> ClientState -> ClientState
 inputHandler event state =
     let sock = networkSocket state
@@ -93,23 +95,33 @@ inputHandler event state =
     in case event of
         EventKey (Char 'q') Down _ _ -> unsafePerformIO exitSuccess  -- Bấm "q" để thoát
  
-        -- Các phím di chuyển
+        -- Các phím di chuyển (NHẤN XUỐNG)
         EventKey (Char 'w') Down _ _ -> sendAction sock pId MoveUp state
         EventKey (Char 's') Down _ _ -> sendAction sock pId MoveDown state
         EventKey (Char 'a') Down _ _ -> sendAction sock pId MoveLeft state
         EventKey (Char 'd') Down _ _ -> sendAction sock pId MoveRight state
 
-        -- Bấm "Space" để bắn
+        -- Các phím di chuyển (NHẢ RA)
+        EventKey (Char 'w') Up _ _ -> sendAction sock pId Idle state
+        EventKey (Char 's') Up _ _ -> sendAction sock pId Idle state
+        EventKey (Char 'a') Up _ _ -> sendAction sock pId Idle state
+        EventKey (Char 'd') Up _ _ -> sendAction sock pId Idle state
+
+
+        -- Bấm "Space" để bắn (chỉ xử lý Down)
         EventKey (SpecialKey KeySpace) Down _ _ -> sendAction sock pId Shoot state
+        
+        -- Bỏ qua sự kiện nhả phím Space
+        EventKey (SpecialKey KeySpace) Up _ _ -> state 
+
+        -- Các trường hợp khác
         _ -> state
 
 -- 3. HÀM UPDATE
 updateHandler :: MVar GameState -> Float -> ClientState -> ClientState
 updateHandler mvar _ currentState = unsafePerformIO $ do
-    tryReadMVar mvar >>= \maybeNewState ->
-        return $ case maybeNewState of
-            Just newGameState -> currentState { gameState = newGameState }
-            Nothing           -> currentState
+    newGameState <- readMVar mvar
+    return $ currentState { gameState = newGameState }
 
 -- CÁC HÀM PHỤ TRỢ KHÁC VÀ LUỒNG MẠNG
 sendAction :: Socket -> PlayerID -> Action -> ClientState -> ClientState
@@ -120,7 +132,7 @@ sendAction sock pId action state = unsafePerformIO $ do
 
 receiverLoop :: Socket -> MVar GameState -> IO ()
 receiverLoop sock gameStateMVar = forever $ do
-    byteString <- recv sock 1024 -- <<< SỬA LẠI CHO ĐÚNG
+    byteString <- recv sock 1024 
     let serverMsg = decode (LBS.fromStrict byteString) :: ServerMessage
     case serverMsg of
         Welcome _ gs -> void $ swapMVar gameStateMVar gs

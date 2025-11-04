@@ -74,6 +74,7 @@ instance Binary Owner
 data Bullet = Bullet
   { bulletPos   :: Position
   , bulletOwner :: Owner
+  , bulletShooter :: Maybe PlayerID
   } deriving (Show, Eq, Generic)
 instance Binary Bullet
 
