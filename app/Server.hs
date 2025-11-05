@@ -20,11 +20,11 @@ data ServerState = ServerState
   , clients   :: TVar (Map.Map PlayerID SockAddr)
   }
 
--- Constants
-playerSpeed, bulletSpeed, enemySpeed, entitySize :: Float
+playerSpeed, bulletSpeed, enemySpeed, itemSpeed, entitySize :: Float
 playerSpeed = 200.0
 bulletSpeed = 400.0
 enemySpeed  = 100.0
+itemSpeed   = 60.0
 entitySize  = 20.0
 
 screenWidth, screenHeight :: Float
@@ -125,8 +125,8 @@ handlePlayerAction state pID action = atomically $ do
 
 -- Core game logic
 runGameLogic :: Float -> GameState -> (GameState, [Bullet])
-runGameLogic deltaT gs =
-  let
+runGameLogic deltaT gs = (finalGameState, newPlayerBullets ++ newEnemyBullets)
+  where
     -- Ensure bot exists in Solo mode
     playersWithBot = case gameMode gs of
       Solo -> let hasBot = any (== Bot) (map playerType (gamePlayer gs))
@@ -137,12 +137,17 @@ runGameLogic deltaT gs =
     -- Let bot decide simple actions
     botControlledPlayers = map (\p -> if playerType p == Bot then botLogic p (gameEnemies gs) else p) playersWithBot
 
-    -- Item spawn timer
+    -- Item spawn timer: spawn at random X near top and let them fall
     spawnTimer' = gameSpawnTimer gs - deltaT
-    (itemsAfterSpawn, nextSpawnTimer) =
+    (itemsSpawned, nextSpawnTimer) =
       if spawnTimer' <= 0
-        then (Item (Position 0 0) 1 : gameItems gs, 5.0)
+        then let seed = gameEnemiesSpawned gs + gameLevel gs + length (gameItems gs)
+                 xI = randX seed
+                 yI = (screenHeight / 2) - 40
+             in (Item (Position xI yI) 1 : gameItems gs, 5.0)
         else (gameItems gs, spawnTimer')
+    -- make items fall
+    itemsAfterSpawn = updateItems deltaT itemsSpawned
 
     -- Players update and bullets fired
     (updatedPlayers, newPlayerBullets) = updatePlayers deltaT botControlledPlayers
@@ -167,21 +172,19 @@ runGameLogic deltaT gs =
     updatedOldBullets = updateBullets deltaT (gameBullets gs)
 
     -- Intermediate state before collisions
-  -- Increase level gradually every 10 spawns
+    -- Increase level gradually every 10 spawns
     letLevel = if (gameEnemiesSpawned gs `mod` 10) == 9 then gameLevel gs + 1 else gameLevel gs
     tempGameState = gs { gamePlayer = updatedPlayers
                        , gameEnemies = updatedEnemies
                        , gameBullets = updatedOldBullets
                        , gameItems = itemsAfterSpawn
-             , gameSpawnTimer = nextSpawnTimer
+                       , gameSpawnTimer = nextSpawnTimer
                        , gameEnemySpawnTimer = nextEnemySpawnTimer
-             , gameEnemiesSpawned = gameEnemiesSpawned gs + (if enemySpawnTimer' <= 0 then 1 else 0)
-             , gameLevel = letLevel }
+                       , gameEnemiesSpawned = gameEnemiesSpawned gs + (if enemySpawnTimer' <= 0 then 1 else 0)
+                       , gameLevel = letLevel }
 
     -- Resolve collisions and scoring
     finalGameState = handleCollisions tempGameState
-    allNewBullets = newPlayerBullets ++ newEnemyBullets
-  in (finalGameState, allNewBullets)
 
 -- Updates
 updatePlayers :: Float -> [Player] -> ([Player], [Bullet])
@@ -235,6 +238,16 @@ updateBullets deltaT = mapMaybe $ \b ->
   in if abs (posY newPos) > screenHeight / 2
        then Nothing
        else Just (b { bulletPos = newPos })
+
+-- Update items: fall down and cull off-screen
+updateItems :: Float -> [Item] -> [Item]
+updateItems dt = mapMaybe $ \it ->
+  let Position x y = itemPos it
+      y' = y - itemSpeed * dt
+      newPos = Position x y'
+  in if y' < (-screenHeight / 2 - entitySize)
+        then Nothing
+        else Just (it { itemPos = newPos })
 
 -- Collisions and scoring
 handleCollisions :: GameState -> GameState

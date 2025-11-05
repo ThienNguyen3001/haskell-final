@@ -9,7 +9,7 @@ screenW = 800
 screenH = 600
 
 margin :: Float
-margin = 12
+margin = 14
 
 scalePlayer, scaleEnemy, scaleBullet, scaleItem :: Float
 scalePlayer = 0.05
@@ -41,7 +41,7 @@ drawPlayfieldBg :: Picture
 drawPlayfieldBg =
     let bgW = screenW * 4  -- large enough to cover typical fullscreen resolutions
         bgH = screenH * 4
-    in color (makeColorI 10 10 20 255)
+    in color (makeColorI 20 50 20 250)
          $ rectangleSolid (bgW - 2*margin) (bgH - 2*margin)
 
 -- Vẽ Phi thuyền (Player)
@@ -138,7 +138,7 @@ renderMenu selMode selPlayer = pictures
     , translate (-150) (-40) $ scale 0.15 0.15 $ color (greyN 0.8) $ text "Select Player"
     , translate (-150) (-70) $ selectable (selPlayer == Player1) "Player 1"
     , translate (-150) (-100) $ selectable (selPlayer == Player2) "Player 2"
-    , translate (-300) (-200) $ scale 0.12 0.12 $ color (makeColorI 200 200 200 255)
+    , translate (-300) (-200) $ scale 0.12 0.12 $ color (makeColorI 150 200 200 255)
                                                     $ text "Left/Right: Mode  |  Up/Down: Player  |  Enter: Start  |  Q: Quit"
     ]
     where
