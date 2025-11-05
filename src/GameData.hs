@@ -44,6 +44,7 @@ data Player = Player
   , playerDeaths   :: Int          -- số lần chết
   , playerAction   :: Action       -- hành động di chuyển hiện tại (Idle, MoveUp,...)
   , playerWantsToShoot :: Bool     -- cờ báo hiệu muốn bắn (do 'Shoot' là sự kiện 1 lần)
+  , playerType     :: PlayerType   -- human or bot
   } deriving (Show, Eq, Generic)
 instance Binary Player
 
@@ -61,6 +62,7 @@ data Enemy = Enemy
   , enemyAction   :: Action
   , enemyState    :: LifeState
   , enemyHP       :: Int
+  , enemyFireCd   :: Float      -- cooldown bắn đạn (giây)
   } deriving (Show, Eq, Generic)
 instance Binary Enemy
 
@@ -86,6 +88,16 @@ data Item = Item
   } deriving (Show, Eq, Generic)
 instance Binary Item
 
+-- | Kiểu người chơi: human hay bot
+data PlayerType = Human | Bot
+  deriving (Show, Eq, Generic)
+instance Binary PlayerType
+
+-- | Chế độ game: cooperative hoặc solo-vs-bot
+data GameMode = Coop | Solo
+  deriving (Show, Eq, Generic)
+instance Binary GameMode
+
 -- | Dữ liệu tổng hợp trạng thái toàn bộ game
 data GameState = GameState
   { gamePlayer       :: [Player]        -- người chơi chính
@@ -96,7 +108,10 @@ data GameState = GameState
   , gameEnemiesSpawned :: Int           -- số lượng đã sinh ra
   , gameWins          :: Int            -- số lần thắng
   , gameLosses        :: Int            -- số lần thua
+  , gameSpawnTimer     :: Float          -- bộ đếm spawn item/enemy
+  , gameEnemySpawnTimer :: Float         -- bộ đếm spawn kẻ địch
   , gameBullets        :: [Bullet]           -- số lượng đạn
   , isShooting         :: Bool          -- có đang bắn không (CÓ THỂ XÓA NẾU KHÔNG DÙNG)
+  , gameMode           :: GameMode      -- chế độ chơi
   } deriving (Show, Eq, Generic)
 instance Binary GameState

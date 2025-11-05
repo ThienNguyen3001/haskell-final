@@ -1,7 +1,7 @@
 cabal-version:      2.4
 name:               haskell-final
 version:            0.1.0.0
-author:             Nguyễn Ngọc Thiện, Dương Quang Đông
+author:             Nguyen Ngoc Thien, Duong Quang Dong
 build-type:         Simple
 
 common common-options

@@ -23,11 +23,16 @@ import GameData
 import GameRender
 
 -- Trạng thái tổng thể của Client, được 'gloss' quản lý
+data UiPhase = InMenu | InGame
+
 data ClientState = ClientState
     { gameState     :: GameState
     , networkSocket :: Socket
     , myPlayerID    :: PlayerID
     , gameSprites   :: GameSprites
+    , uiPhase       :: UiPhase
+    , selMode       :: GameMode
+    , selPlayer     :: PlayerID
     }
 
 main :: IO ()
@@ -46,13 +51,14 @@ main = withSocketsDo $ do
     let serverIP = "127.0.0.1"
     let serverPort = "8080"
     addrInfos <- getAddrInfo (Just (defaultHints { addrSocketType = Datagram })) (Just serverIP) (Just serverPort)
-    sock <- socket (addrFamily $ head addrInfos) Datagram defaultProtocol
-    connect sock (addrAddress $ head addrInfos)
+    let ai = head addrInfos
+    sock <- socket (addrFamily ai) Datagram defaultProtocol
+    connect sock (addrAddress ai)
     putStrLn "Network socket connected."
 
     -- 3. KHỞI TẠO MVAR VÀ LUỒNG MẠNG
-    --                Player Enemy Item Level Left Spwn Wins Loss Bullet Shoot
-    let initialGameState = GameState [] [] [] 0 0 0 0 0 [] False
+    --                Player Enemy Item Level Left Spwn Wins Loss ItemSpawn EnemySpawn Bullets Shoot Mode
+    let initialGameState = GameState [] [] [] 0 0 0 0 0 5.0 2.0 [] False Coop
     
     gameStateMVar <- newMVar initialGameState
     _ <- forkIO $ receiverLoop sock gameStateMVar
@@ -63,20 +69,17 @@ main = withSocketsDo $ do
                 ("player2":_) -> Player2
                 _             -> Player1 -- Mặc định là Player1
     
-    putStrLn $ "Attempting to join as: " ++ show pID
-
-    -- 5. GỬI YÊU CẦU THAM GIA GAME
-    let joinMsg = JoinGame pID
-    _ <- send sock (LBS.toStrict $ encode joinMsg)
+    putStrLn $ "Ready. Opened Menu. Default selection: " ++ show pID
     
-    -- 6. KHỞI CHẠY VÒNG LẶP GAME CỦA GLOSS
-    let displayMode = InWindow "Haskell Shooter" (800, 600) (100, 100)
-    let initialState = ClientState initialGameState sock pID sprites    
+    -- 6. KHỞI CHẠY VÒNG LẶP GAME CỦA GLOSS (TOÀN MÀN HÌNH)
+    let displayMode = FullScreen
+    let initialState = ClientState initialGameState sock pID sprites InMenu Coop pID   
 
+    let customBackground = makeColorI 25 25 112 255
     putStrLn "Starting game loop..."
     play
         displayMode
-        black
+        customBackground
         60
         initialState
         drawHandler
@@ -99,37 +102,52 @@ loadJuicyPNG_ path = do
 
 -- 1. HÀM VẼ
 drawHandler :: ClientState -> Picture
-drawHandler state = render (gameSprites state) (gameState state)
+drawHandler state = case uiPhase state of
+    InMenu -> renderMenu (selMode state) (selPlayer state)
+    InGame -> render (gameSprites state) (gameState state)
 
 -- 2. HÀM INPUT
 inputHandler :: Event -> ClientState -> ClientState
 inputHandler event state =
     let sock = networkSocket state
         pId  = myPlayerID state
-    in case event of
-        EventKey (Char 'q') Down _ _ -> unsafePerformIO exitSuccess  -- Bấm "q" để thoát
- 
-        -- Các phím di chuyển (NHẤN XUỐNG)
-        EventKey (Char 'w') Down _ _ -> sendAction sock pId MoveUp state
-        EventKey (Char 's') Down _ _ -> sendAction sock pId MoveDown state
-        EventKey (Char 'a') Down _ _ -> sendAction sock pId MoveLeft state
-        EventKey (Char 'd') Down _ _ -> sendAction sock pId MoveRight state
+    in case uiPhase state of
+        InMenu -> case event of
+            EventKey (Char 'q') Down _ _ -> unsafePerformIO exitSuccess
+            EventKey (SpecialKey KeyLeft)  Down _ _ -> state { selMode = Coop }
+            EventKey (SpecialKey KeyRight) Down _ _ -> state { selMode = Solo }
+            EventKey (SpecialKey KeyUp)    Down _ _ -> state { selPlayer = Player1 }
+            EventKey (SpecialKey KeyDown)  Down _ _ -> state { selPlayer = Player2 }
+            EventKey (SpecialKey KeyEnter) Down _ _ -> unsafePerformIO $ do
+                -- Apply chosen mode and join with chosen player, then enter game
+                let modeMsg = SetMode (selMode state)
+                void $ send sock (LBS.toStrict $ encode modeMsg)
+                let joinMsg = JoinGame (selPlayer state)
+                void $ send sock (LBS.toStrict $ encode joinMsg)
+                pure state { myPlayerID = selPlayer state, uiPhase = InGame }
+            _ -> state
 
-        -- Các phím di chuyển (NHẢ RA)
-        EventKey (Char 'w') Up _ _ -> sendAction sock pId Idle state
-        EventKey (Char 's') Up _ _ -> sendAction sock pId Idle state
-        EventKey (Char 'a') Up _ _ -> sendAction sock pId Idle state
-        EventKey (Char 'd') Up _ _ -> sendAction sock pId Idle state
-
-
-        -- Bấm "Space" để bắn (chỉ xử lý Down)
-        EventKey (SpecialKey KeySpace) Down _ _ -> sendAction sock pId Shoot state
-        
-        -- Bỏ qua sự kiện nhả phím Space
-        EventKey (SpecialKey KeySpace) Up _ _ -> state 
-
-        -- Các trường hợp khác
-        _ -> state
+        InGame -> case event of
+            EventKey (Char 'q') Down _ _ -> unsafePerformIO exitSuccess
+            -- Hold movement
+            EventKey (Char 'w') Down _ _ -> sendAction sock pId MoveUp state
+            EventKey (Char 's') Down _ _ -> sendAction sock pId MoveDown state
+            EventKey (Char 'a') Down _ _ -> sendAction sock pId MoveLeft state
+            EventKey (Char 'd') Down _ _ -> sendAction sock pId MoveRight state
+            -- Release movement
+            EventKey (Char 'w') Up _ _ -> sendAction sock pId Idle state
+            EventKey (Char 's') Up _ _ -> sendAction sock pId Idle state
+            EventKey (Char 'a') Up _ _ -> sendAction sock pId Idle state
+            EventKey (Char 'd') Up _ _ -> sendAction sock pId Idle state
+            -- Shoot
+            EventKey (SpecialKey KeySpace) Down _ _ -> sendAction sock pId Shoot state
+            EventKey (SpecialKey KeySpace) Up _ _   -> state
+            -- Mode hotkeys in-game
+            EventKey (Char '1') Down _ _ -> setMode sock Coop state
+            EventKey (Char '2') Down _ _ -> setMode sock Solo state
+            EventKey (Char 'n') Down _ _ -> setMode sock Coop state
+            EventKey (Char 'b') Down _ _ -> setMode sock Solo state
+            _ -> state
 
 -- 3. HÀM UPDATE
 updateHandler :: MVar GameState -> Float -> ClientState -> ClientState
@@ -152,3 +170,10 @@ receiverLoop sock gameStateMVar = forever $ do
         Welcome _ gs -> void $ swapMVar gameStateMVar gs
         UpdateGame gs -> void $ swapMVar gameStateMVar gs
         _ -> return ()
+
+-- Đổi chế độ chơi (gửi lên server)
+setMode :: Socket -> GameMode -> ClientState -> ClientState
+setMode sock mode st = unsafePerformIO $ do
+    let msg = SetMode mode
+    void $ send sock (LBS.toStrict $ encode msg)
+    return st

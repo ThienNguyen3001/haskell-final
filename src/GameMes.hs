@@ -2,7 +2,7 @@
 
 module GameMes where
 
-import GameData (Position, Action, GameState, PlayerID)
+import GameData (Position, Action, GameState, PlayerID, GameMode)
 import GHC.Generics (Generic)
 import Data.Binary (Binary)
 
@@ -18,6 +18,7 @@ data ClientMessage
   | PlayerHit PlayerID                  -- báo bị trúng đạn
   | PlayerRespawn PlayerID              -- hồi sinh
   | PlayerQuit PlayerID                 -- rời khỏi game
+  | SetMode GameMode                    -- đặt chế độ chơi (Coop | Solo)
   deriving (Show, Eq, Generic)
 
 instance Binary ClientMessage 
