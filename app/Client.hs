@@ -30,6 +30,7 @@ data ClientState = ClientState
     , networkSocket :: Socket
     , myPlayerID    :: PlayerID
     , gameSprites   :: GameSprites
+    , windowSize    :: (Int, Int)
     , uiPhase       :: UiPhase
     , selMode       :: GameMode
     , selPlayer     :: PlayerID
@@ -73,7 +74,7 @@ main = withSocketsDo $ do
     
     -- 6. KHỞI CHẠY VÒNG LẶP GAME CỦA GLOSS (TOÀN MÀN HÌNH)
     let displayMode = FullScreen
-    let initialState = ClientState initialGameState sock pID sprites InMenu Coop pID   
+    let initialState = ClientState initialGameState sock pID sprites (1920,1080) InMenu Coop pID
 
     let customBackground = makeColorI 25 25 112 255
     putStrLn "Starting game loop..."
@@ -104,7 +105,7 @@ loadJuicyPNG_ path = do
 drawHandler :: ClientState -> Picture
 drawHandler state = case uiPhase state of
     InMenu -> renderMenu (selMode state) (selPlayer state)
-    InGame -> render (gameSprites state) (gameState state)
+    InGame -> render (gameSprites state) (gameState state) (windowSize state)
 
 -- 2. HÀM INPUT
 inputHandler :: Event -> ClientState -> ClientState

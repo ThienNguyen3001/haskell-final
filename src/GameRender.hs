@@ -26,14 +26,14 @@ data GameSprites = GameSprites
     }
 
 -- Chữ ký hàm Render chỉ cần nhận vào các sprite và GameState tổng thể
-render :: GameSprites -> GameState -> Picture
-render sprites gs = pictures
+render :: GameSprites -> GameState -> (Int, Int) -> Picture
+render sprites gs (winW, winH) = pictures
     [ drawPlayfieldBg
     , drawItems     (itemSprite sprites)   (gameItems gs)
     , drawEnemies   (enemySprite sprites)  (gameEnemies gs)
     , drawPlayers   (playerSprite sprites) (gamePlayer gs)
     , drawBullets   (bulletSprite sprites) (gameBullets gs)
-    , drawHUD       gs
+    , drawHUD        gs                    (winW, winH)
     ]
 
 -- Subtle playfield background
@@ -78,17 +78,18 @@ drawItem :: Picture -> Item -> Picture
 drawItem sprite i = let (Position x y) = itemPos i in translate x y $ scale scaleItem scaleItem sprite
 
 -- HUD / UI Overlay
-drawHUD :: GameState -> Picture
-drawHUD gs = pictures [topBar, playersPanel, footer]
+drawHUD :: GameState -> (Int, Int) -> Picture
+drawHUD gs (winW, winH) = pictures [topBar, playersPanel, footer]
     where
-        -- Top bar with mode and level
+        w = fromIntegral winW
+        h = fromIntegral winH
         modeText = case gameMode gs of
             Coop -> "Mode: Coop"
             Solo -> "Mode: Solo"
         p1Lives = maybe 0 playerLives (findPlayer Player1 gs)
         p2Lives = maybe 0 playerLives (findPlayer Player2 gs)
         topText = modeText ++ "  |  Lives: P1 " ++ show p1Lives ++ "  P2 " ++ show p2Lives
-        topBar = translate (-screenW/2 + margin) (screenH/2 - margin - 18)
+        topBar = translate (-w/2 + margin) (h/2 - margin - 18)
             $ scale 0.12 0.12
             $ color (makeColorI 220 220 255 255)
             $ text topText
@@ -100,7 +101,7 @@ drawHUD gs = pictures [topBar, playersPanel, footer]
             ]
 
         -- Footer with controls
-        footer = translate (-screenW/2 + margin) (-screenH/2 + margin)
+        footer = translate (-w/2 + margin) (-h/2 + margin)
                      $ scale 0.1 0.1
                      $ color (makeColorI 200 200 200 255)
                      $ text "WASD move, Space shoot | 1/n: Coop, 2/b: Solo | q: quit"
