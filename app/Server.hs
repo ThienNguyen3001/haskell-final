@@ -4,6 +4,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (forever, forM_, void)
 import qualified Data.Map as Map
+import Data.List (nub)
 import Data.Binary (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
 import Network.Socket
@@ -251,9 +252,13 @@ handleCollisions gs =
       (hitPlayers, remainingEnemyBullets) =
         checkBulletPlayerCollisions enemyBullets players
 
+      -- Players touching enemies also lose 1 life (once per tick)
+      touchedPlayers = [ p | p <- players
+                           , any (\e -> isColliding (playerPos p) (enemyPos e) entitySize) enemies ]
+
       updatedEnemies = filter (`notElem` hitEnemies) enemies
 
-      hitPlayerIDs = map playerID hitPlayers
+      hitPlayerIDs = nub (map playerID hitPlayers ++ map playerID touchedPlayers)
       updatedPlayers = map (\p -> if playerID p `elem` hitPlayerIDs
                                     then p { playerLives = playerLives p - 1 }
                                     else p) players

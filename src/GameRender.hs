@@ -56,24 +56,10 @@ drawPlayer sprite p = let (Position x y) = playerPos p in translate x y $ scale 
 drawEnemies :: Picture -> [Enemy] -> Picture
 drawEnemies sprite es = pictures (map (drawEnemy sprite) es)
 
-healthBar :: Enemy -> Picture
-healthBar e =
-    let Position x y = enemyPos e
-        total = case enemyType e of
-                  BigEnemy   -> 3
-                  SmallEnemy -> 1
-        hp = fromIntegral (enemyHP e)
-        w  = 20
-        h  = 3
-        ratio = hp / fromIntegral total
-        back = color (greyN 0.3) $ translate x (y+18) $ rectangleSolid w h
-        fore = color red $ translate (x - (w/2) + (w*ratio)/2) (y+18) $ rectangleSolid (w*ratio) h
-    in pictures [back, fore]
-
 drawEnemy :: Picture -> Enemy -> Picture
 drawEnemy sprite e =
     let (Position x y) = enemyPos e
-    in pictures [translate x y $ scale scaleEnemy scaleEnemy sprite, healthBar e]
+    in translate x y $ scale scaleEnemy scaleEnemy sprite
 
 -- Vẽ Đường đạn (Bullet)
 drawBullets :: Picture -> [Bullet] -> Picture
@@ -99,10 +85,13 @@ drawHUD gs = pictures [topBar, playersPanel, footer]
         modeText = case gameMode gs of
             Coop -> "Mode: Coop"
             Solo -> "Mode: Solo"
+        p1Lives = maybe 0 playerLives (findPlayer Player1 gs)
+        p2Lives = maybe 0 playerLives (findPlayer Player2 gs)
+        topText = modeText ++ "  |  Lives: P1 " ++ show p1Lives ++ "  P2 " ++ show p2Lives
         topBar = translate (-screenW/2 + margin) (screenH/2 - margin - 18)
-                $ scale 0.12 0.12
-                $ color (makeColorI 220 220 255 255)
-                $ text modeText
+            $ scale 0.12 0.12
+            $ color (makeColorI 220 220 255 255)
+            $ text topText
 
         -- Players panel (scores + lives bars)
         playersPanel = pictures
