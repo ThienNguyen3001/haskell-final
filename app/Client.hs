@@ -72,6 +72,7 @@ main = withSocketsDo $ do
     putStrLn $ "Ready. Opened Menu. Default selection: " ++ show pID
     
     let displayMode = InWindow "Haskell Shooter" (800, 600) (100, 100)
+    
     let initialState = ClientState initialGameState sock pID sprites InMenu Coop pID   
 
     let customBackground = makeColorI 25 25 112 255
