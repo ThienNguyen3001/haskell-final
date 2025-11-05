@@ -71,8 +71,7 @@ main = withSocketsDo $ do
     
     putStrLn $ "Ready. Opened Menu. Default selection: " ++ show pID
     
-    -- 6. KHỞI CHẠY VÒNG LẶP GAME CỦA GLOSS (TOÀN MÀN HÌNH)
-    let displayMode = FullScreen
+    let displayMode = InWindow "Haskell Shooter" (800, 600) (100, 100)
     let initialState = ClientState initialGameState sock pID sprites InMenu Coop pID   
 
     let customBackground = makeColorI 25 25 112 255
