@@ -40,6 +40,9 @@ data ClientState = ClientState
 
 main :: IO ()
 main = withSocketsDo $ do
+    -- 0. PARSE COMMAND LINE ARGUMENTS FIRST
+    args <- getArgs
+    
     -- 1. TẢI HÌNH ẢNH
     putStrLn "Loading sprites..."
     playerPic <- loadJuicyPNG_ "assets/spaceship.png"
@@ -50,9 +53,12 @@ main = withSocketsDo $ do
     putStrLn "All sprites loaded."
 
     -- 2. THIẾT LẬP KẾT NỐI MẠNG
-    putStrLn "Connecting to server..."
-    let serverIP = "127.0.0.1"
+    -- Parse command line args for server IP (default: localhost)
+    let serverIP = case args of
+                     (ip:_) | not (null ip) && head ip /= 'p' -> ip  -- First arg is IP if doesn't start with 'p'
+                     _      -> "127.0.0.1"  -- Default to localhost
     let serverPort = "8080"
+    putStrLn $ "Connecting to server at " ++ serverIP ++ ":" ++ serverPort ++ "..."
     addrInfos <- getAddrInfo (Just (defaultHints { addrSocketType = Datagram })) (Just serverIP) (Just serverPort)
     sock <- case addrInfos of
         (ai:_) -> do
@@ -70,11 +76,9 @@ main = withSocketsDo $ do
     gameOverMVar <- newMVar False
     _ <- forkIO $ receiverLoop sock gameStateMVar gameOverMVar
 
-    -- 4. XÁC ĐỊNH PLAYERID TỪ THAM SỐ DÒNG LỆNH (SỬA LOGIC NẶNG)
-    args <- getArgs
-    let pID = case args of
-                ("player2":_) -> Player2
-                _             -> Player1 -- Mặc định là Player1
+    -- 4. XÁC ĐỊNH PLAYERID TỪ THAM SỐ DÒNG LỆNH
+    -- Check if "player2" is in arguments
+    let pID = if "player2" `elem` args then Player2 else Player1
     
     putStrLn $ "Ready. Opened Menu. Default selection: " ++ show pID
     
