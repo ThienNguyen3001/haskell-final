@@ -45,6 +45,8 @@ data Player = Player
   , playerAction   :: Action       -- hành động di chuyển hiện tại (Idle, MoveUp,...)
   , playerWantsToShoot :: Bool     -- cờ báo hiệu muốn bắn (do 'Shoot' là sự kiện 1 lần)
   , playerType     :: PlayerType   -- human or bot
+  , playerShootCooldown :: Float   -- cooldown timer for shooting (giây)
+  , playerRespawnTimer :: Float    -- respawn timer for bots (giây), 0 = alive
   } deriving (Show, Eq, Generic)
 instance Binary Player
 
@@ -93,8 +95,12 @@ data PlayerType = Human | Bot
   deriving (Show, Eq, Generic)
 instance Binary PlayerType
 
--- | Chế độ game: cooperative hoặc solo-vs-bot
-data GameMode = Coop | Solo
+-- | Chế độ game
+-- Solo: chỉ 1 người chơi, không có bot (khó)
+-- CoopBot: 1 người chơi + 1 AI bot cùng diệt quái (dễ)
+-- Coop: 2 người chơi cùng diệt quái
+-- PvP: 2 người chơi bắn nhau
+data GameMode = Solo | CoopBot | Coop | PvP
   deriving (Show, Eq, Generic)
 instance Binary GameMode
 
@@ -108,10 +114,11 @@ data GameState = GameState
   , gameEnemiesSpawned :: Int           -- số lượng đã sinh ra
   , gameWins          :: Int            -- số lần thắng
   , gameLosses        :: Int            -- số lần thua
-  , gameSpawnTimer     :: Float          -- bộ đếm spawn item/enemy
+  , gameSpawnTimer     :: Float          -- bộ đếm spawn item
   , gameEnemySpawnTimer :: Float         -- bộ đếm spawn kẻ địch
-  , gameBullets        :: [Bullet]           -- số lượng đạn
-  , isShooting         :: Bool          -- có đang bắn không (CÓ THỂ XÓA NẾU KHÔNG DÙNG)
-  , gameMode           :: GameMode      -- chế độ chơi
+  , gameBullets        :: [Bullet]      -- danh sách đạn
+  , isShooting         :: Bool          -- có đang bắn không
+  , gameMode           :: GameMode      -- chế độ chơi (Solo/CoopBot/Coop/PvP)
+  , gameEnemiesEscaped :: Int           -- số enemy đã rơi xuống (thua khi >= 3)
   } deriving (Show, Eq, Generic)
 instance Binary GameState

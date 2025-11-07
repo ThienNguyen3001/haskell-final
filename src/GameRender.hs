@@ -36,6 +36,26 @@ render sprites gs = pictures
     , drawHUD       gs
     ]
 
+-- Game Over screen
+renderGameOver :: GameState -> Picture
+renderGameOver gs = pictures
+    [ color (makeColorI 0 0 0 180) $ rectangleSolid (screenW*1.2) (screenH*1.2)
+    , translate (-220) 80 $ scale 0.3 0.3 $ color (makeColorI 255 80 80 255) $ text "GAME OVER"
+    , translate (-180) 20 $ scale 0.15 0.15 $ color (makeColorI 255 150 150 255) $ text reason
+    , translate (-250) (-40) $ scale 0.15 0.15 $ color white $ text (scoresText gs)
+    , translate (-250) (-100) $ scale 0.12 0.12 $ color (makeColorI 200 200 200 255) $ text "Enter: Menu  |  Q: Quit"
+    ]
+    where
+        reason = if gameEnemiesEscaped gs >= 3
+                 then "Too many enemies escaped!"
+                 else "All players defeated!"
+
+scoresText :: GameState -> String
+scoresText st = "Score P1: "
+             ++ show (maybe 0 playerScore (findPlayer Player1 st))
+             ++ "  P2: "
+             ++ show (maybe 0 playerScore (findPlayer Player2 st))
+
 -- Subtle playfield background
 drawPlayfieldBg :: Picture
 drawPlayfieldBg =
@@ -81,13 +101,13 @@ drawItem sprite i = let (Position x y) = itemPos i in translate x y $ scale scal
 drawHUD :: GameState -> Picture
 drawHUD gs = pictures [topBar, playersPanel, footer]
     where
-        -- Top bar with mode and level
+        -- Top bar with mode and escaped counter
         modeText = case gameMode gs of
-            Coop -> "Mode: Coop"
-            Solo -> "Mode: Solo"
-        p1Lives = maybe 0 playerLives (findPlayer Player1 gs)
-        p2Lives = maybe 0 playerLives (findPlayer Player2 gs)
-        topText = modeText ++ "  |  Lives: P1 " ++ show p1Lives ++ "  P2 " ++ show p2Lives
+            Solo     -> "SOLO"
+            CoopBot  -> "COOP+BOT"
+            Coop     -> "COOP"
+            PvP      -> "PVP"
+        topText = "Mode: " ++ modeText ++ "  |  Enemies Escaped: " ++ show (gameEnemiesEscaped gs) ++ "/3"
         topBar = translate (-screenW/2 + margin) (screenH/2 - margin - 18)
             $ scale 0.12 0.12
             $ color (makeColorI 220 220 255 255)
@@ -103,17 +123,20 @@ drawHUD gs = pictures [topBar, playersPanel, footer]
         footer = translate (-screenW/2 + margin) (-screenH/2 + margin)
                      $ scale 0.1 0.1
                      $ color (makeColorI 200 200 200 255)
-                     $ text "WASD move, Space shoot | 1/n: Coop, 2/b: Solo | q: quit"
+                     $ text "WASD move, Space shoot | 1: Solo, 2: CoopBot, 3: Coop, 4: PvP | q: quit"
 
 drawPlayerHud :: PlayerID -> Float -> Float -> GameState -> Picture
 drawPlayerHud pid x y gs =
     case findPlayer pid gs of
         Nothing -> blank
         Just p  ->
-            let lbl   = (if pid == Player1 then "P1" else "P2") ++ ("  Score: " ++ show (playerScore p))
+            let playerLabel = if pid == Player1 then "P1" else "P2"
+                livesText   = " Lives: " ++ show (playerLives p)
+                scoreText   = " Score: " ++ show (playerScore p)
+                lbl = playerLabel ++ livesText ++ scoreText
                 lives = playerLives p
             in pictures [ translate x y $ scale 0.12 0.12 $ color white $ text lbl
-                        , translate (x+220) (y-4) $ drawLivesBar lives
+                        , translate (x+320) (y-4) $ drawLivesBar lives
                         ]
 
 drawLivesBar :: Int -> Picture
@@ -128,25 +151,36 @@ drawLivesBar n =
              $ rectangleSolid (w*filled) h
     in pictures [back, fore]
 
--- Menu rendering (mode & player selection)
+-- Menu rendering (mode & player selection) - Enhanced
 renderMenu :: GameMode -> PlayerID -> Picture
 renderMenu selMode selPlayer = pictures
-    [ translate (-220) 140 $ scale 0.25 0.25 $ color (makeColorI 230 230 255 255) $ text "Haskell Shooter"
-    , translate (-150) 60  $ scale 0.15 0.15 $ color (greyN 0.8) $ text "Select Mode"
-    , translate (-150) 30  $ selectable (selMode == Coop) "Coop"
-    , translate (-150) 0   $ selectable (selMode == Solo) "Solo"
-    , translate (-150) (-40) $ scale 0.15 0.15 $ color (greyN 0.8) $ text "Select Player"
-    , translate (-150) (-70) $ selectable (selPlayer == Player1) "Player 1"
-    , translate (-150) (-100) $ selectable (selPlayer == Player2) "Player 2"
-    , translate (-300) (-200) $ scale 0.12 0.12 $ color (makeColorI 150 200 200 255)
-                                                    $ text "Left/Right: Mode  |  Up/Down: Player  |  Enter: Start  |  Q: Quit"
+    [ -- Title with shadow effect
+      translate (-218) 138 $ scale 0.25 0.25 $ color (greyN 0.3) $ text "Haskell Shooter"
+    , translate (-220) 140 $ scale 0.25 0.25 $ color (makeColorI 80 200 255 255) $ text "Haskell Shooter"
+    
+    -- Instructions box
+    , translate 0 (-180) $ color (makeColorI 40 40 60 200) $ rectangleSolid 580 80
+    , translate (-280) (-160) $ scale 0.11 0.11 $ color (makeColorI 200 220 255 255) $ text "Controls: WASD=Move | Space=Shoot | Arrows=Navigate | Enter=Confirm"
+    , translate (-280) (-190) $ scale 0.11 0.11 $ color (makeColorI 200 220 255 255) $ text "Objective: Survive waves of enemies! Don't let 3 escape!"
+    
+    -- Mode selection
+    , translate (-150) 80  $ scale 0.15 0.15 $ color (makeColorI 255 210 100 255) $ text "Select Mode:"
+    , translate (-150) 50  $ selectable (selMode == Solo) "Solo - 1 Player Only (Hard)"
+    , translate (-150) 20  $ selectable (selMode == CoopBot) "Coop+Bot - 1 Player + AI (Easy)"
+    , translate (-150) (-10) $ selectable (selMode == Coop) "Coop - 2 Players vs Enemies"
+    , translate (-150) (-40) $ selectable (selMode == PvP) "PvP - 2 Players Fight!"
+    
+    -- Player selection
+    , translate (-150) (-75) $ scale 0.15 0.15 $ color (makeColorI 255 210 100 255) $ text "Select Player:"
+    , translate (-150) (-105) $ selectable (selPlayer == Player1) "Player 1"
+    , translate (-150) (-135) $ selectable (selPlayer == Player2) "Player 2"
     ]
     where
         selectable on label =
-            let c = if on then makeColorI 255 210 80 255 else white
-            in scale 0.18 0.18 $ color c $ text (prefix on ++ label)
-        prefix True  = "> "
-        prefix False = "  "
+            let c = if on then makeColorI 80 255 150 255 else white
+            in scale 0.13 0.13 $ color c $ text (prefix on ++ label)
+        prefix True  = ">>> "
+        prefix False = "    "
 
 -- Hàm phụ trợ để tìm player
 findPlayer :: PlayerID -> GameState -> Maybe Player

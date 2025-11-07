@@ -23,16 +23,19 @@ import GameData
 import GameRender
 
 -- Trạng thái tổng thể của Client, được 'gloss' quản lý
-data UiPhase = InMenu | InGame
+data UiPhase = InMenu | InGame | UiGameOver
+    deriving (Eq, Show)
 
 data ClientState = ClientState
-    { gameState     :: GameState
-    , networkSocket :: Socket
-    , myPlayerID    :: PlayerID
-    , gameSprites   :: GameSprites
-    , uiPhase       :: UiPhase
-    , selMode       :: GameMode
-    , selPlayer     :: PlayerID
+    { gameState       :: GameState
+    , networkSocket   :: Socket
+    , myPlayerID      :: PlayerID
+    , gameSprites     :: GameSprites
+    , uiPhase         :: UiPhase
+    , selMode         :: GameMode
+    , selPlayer       :: PlayerID
+    , gameOver        :: Bool
+    , gameOverMVar    :: MVar Bool  -- Add reference to MVar
     }
 
 main :: IO ()
@@ -51,17 +54,21 @@ main = withSocketsDo $ do
     let serverIP = "127.0.0.1"
     let serverPort = "8080"
     addrInfos <- getAddrInfo (Just (defaultHints { addrSocketType = Datagram })) (Just serverIP) (Just serverPort)
-    let ai = head addrInfos
-    sock <- socket (addrFamily ai) Datagram defaultProtocol
-    connect sock (addrAddress ai)
-    putStrLn "Network socket connected."
+    sock <- case addrInfos of
+        (ai:_) -> do
+            s <- socket (addrFamily ai) Datagram defaultProtocol
+            connect s (addrAddress ai)
+            putStrLn "Network socket connected."
+            return s
+        [] -> error "No address info available"
 
     -- 3. KHỞI TẠO MVAR VÀ LUỒNG MẠNG
-    --                Player Enemy Item Level Left Spwn Wins Loss ItemSpawn EnemySpawn Bullets Shoot Mode
-    let initialGameState = GameState [] [] [] 0 0 0 0 0 5.0 2.0 [] False Coop
+    --                Player Enemy Item Level Left Spwn Wins Loss ItemSpawn EnemySpawn Bullets Shoot Mode Escaped
+    let initialGameState = GameState [] [] [] 0 0 0 0 0 5.0 2.0 [] False Coop 0
     
     gameStateMVar <- newMVar initialGameState
-    _ <- forkIO $ receiverLoop sock gameStateMVar
+    gameOverMVar <- newMVar False
+    _ <- forkIO $ receiverLoop sock gameStateMVar gameOverMVar
 
     -- 4. XÁC ĐỊNH PLAYERID TỪ THAM SỐ DÒNG LỆNH (SỬA LOGIC NẶNG)
     args <- getArgs
@@ -73,18 +80,21 @@ main = withSocketsDo $ do
     
     let displayMode = InWindow "Haskell Shooter" (800, 600) (100, 100)
     
-    let initialState = ClientState initialGameState sock pID sprites InMenu Coop pID   
+    let initialState = ClientState
+            { gameState = initialGameState
+            , networkSocket = sock
+            , myPlayerID = pID
+            , gameSprites = sprites
+            , uiPhase = InMenu
+            , selMode = Coop
+            , selPlayer = pID
+            , gameOver = False
+            , gameOverMVar = gameOverMVar
+            }
 
     let customBackground = makeColorI 25 25 112 255
     putStrLn "Starting game loop..."
-    play
-        displayMode
-        customBackground
-        60
-        initialState
-        drawHandler
-        inputHandler
-        (updateHandler gameStateMVar)
+    play displayMode customBackground 60 initialState drawHandler inputHandler (updateHandler gameStateMVar gameOverMVar)
 
 -- Hàm load ảnh phụ trợ để xử lý lỗi
 loadJuicyPNG_ :: FilePath -> IO Picture
@@ -105,6 +115,7 @@ drawHandler :: ClientState -> Picture
 drawHandler state = case uiPhase state of
     InMenu -> renderMenu (selMode state) (selPlayer state)
     InGame -> render (gameSprites state) (gameState state)
+    UiGameOver -> renderGameOver (gameState state)
 
 -- 2. HÀM INPUT
 inputHandler :: Event -> ClientState -> ClientState
@@ -114,21 +125,34 @@ inputHandler event state =
     in case uiPhase state of
         InMenu -> case event of
             EventKey (Char 'q') Down _ _ -> unsafePerformIO exitSuccess
-            EventKey (SpecialKey KeyLeft)  Down _ _ -> state { selMode = Coop }
-            EventKey (SpecialKey KeyRight) Down _ _ -> state { selMode = Solo }
+            EventKey (SpecialKey KeyLeft)  Down _ _ -> state { selMode = case selMode state of
+                                                                    Solo    -> PvP
+                                                                    CoopBot -> Solo
+                                                                    Coop    -> CoopBot
+                                                                    PvP     -> Coop }
+            EventKey (SpecialKey KeyRight) Down _ _ -> state { selMode = case selMode state of
+                                                                    Solo    -> CoopBot
+                                                                    CoopBot -> Coop
+                                                                    Coop    -> PvP
+                                                                    PvP     -> Solo }
             EventKey (SpecialKey KeyUp)    Down _ _ -> state { selPlayer = Player1 }
             EventKey (SpecialKey KeyDown)  Down _ _ -> state { selPlayer = Player2 }
             EventKey (SpecialKey KeyEnter) Down _ _ -> unsafePerformIO $ do
-                -- Apply chosen mode and join with chosen player, then enter game
+                -- Reset game over state before starting new game
+                void $ swapMVar (gameOverMVar state) False
+                -- Apply chosen mode and join with chosen player
                 let modeMsg = SetMode (selMode state)
                 void $ send sock (LBS.toStrict $ encode modeMsg)
                 let joinMsg = JoinGame (selPlayer state)
                 void $ send sock (LBS.toStrict $ encode joinMsg)
-                pure state { myPlayerID = selPlayer state, uiPhase = InGame }
+                pure state { myPlayerID = selPlayer state, uiPhase = InGame, gameOver = False }
             _ -> state
 
         InGame -> case event of
-            EventKey (Char 'q') Down _ _ -> unsafePerformIO exitSuccess
+            EventKey (Char 'q') Down _ _ -> unsafePerformIO $ do
+                let quitMsg = PlayerQuit pId
+                void $ send sock (LBS.toStrict $ encode quitMsg)
+                exitSuccess
             -- Hold movement
             EventKey (Char 'w') Down _ _ -> sendAction sock pId MoveUp state
             EventKey (Char 's') Down _ _ -> sendAction sock pId MoveDown state
@@ -143,17 +167,37 @@ inputHandler event state =
             EventKey (SpecialKey KeySpace) Down _ _ -> sendAction sock pId Shoot state
             EventKey (SpecialKey KeySpace) Up _ _   -> state
             -- Mode hotkeys in-game
-            EventKey (Char '1') Down _ _ -> setMode sock Coop state
-            EventKey (Char '2') Down _ _ -> setMode sock Solo state
-            EventKey (Char 'n') Down _ _ -> setMode sock Coop state
-            EventKey (Char 'b') Down _ _ -> setMode sock Solo state
+            EventKey (Char '1') Down _ _ -> setMode sock Solo state
+            EventKey (Char '2') Down _ _ -> setMode sock CoopBot state
+            EventKey (Char '3') Down _ _ -> setMode sock Coop state
+            EventKey (Char '4') Down _ _ -> setMode sock PvP state
+            _ -> state
+
+        UiGameOver -> case event of
+            EventKey (SpecialKey KeyEnter) Down _ _ -> unsafePerformIO $ do
+                -- Reset game over state in MVar
+                void $ swapMVar (gameOverMVar state) False
+                return $ state { uiPhase = InMenu, gameOver = False }
+            EventKey (Char 'q') Down _ _ -> unsafePerformIO $ do
+                let quitMsg = PlayerQuit pId
+                void $ send sock (LBS.toStrict $ encode quitMsg)
+                exitSuccess
             _ -> state
 
 -- 3. HÀM UPDATE
-updateHandler :: MVar GameState -> Float -> ClientState -> ClientState
-updateHandler mvar _ currentState = unsafePerformIO $ do
-    newGameState <- readMVar mvar
-    return $ currentState { gameState = newGameState }
+updateHandler :: MVar GameState -> MVar Bool -> Float -> ClientState -> ClientState
+updateHandler gsVar goVar _ currentState = unsafePerformIO $ do
+    newGameState <- readMVar gsVar
+    isOver <- readMVar goVar
+    let currentPhase = uiPhase currentState
+        nextPhase 
+          | currentPhase == InMenu = InMenu  -- Never auto-transition from menu
+          | currentPhase == InGame && isOver = UiGameOver  -- Only transition to GameOver from InGame
+          | otherwise = currentPhase
+    return $ currentState { gameState = newGameState
+                          , uiPhase = nextPhase
+                          , gameOver = isOver
+                          }
 
 -- CÁC HÀM PHỤ TRỢ KHÁC VÀ LUỒNG MẠNG
 sendAction :: Socket -> PlayerID -> Action -> ClientState -> ClientState
@@ -162,14 +206,19 @@ sendAction sock pId action state = unsafePerformIO $ do
     void $ send sock (LBS.toStrict $ encode msg)
     return state
 
-receiverLoop :: Socket -> MVar GameState -> IO ()
-receiverLoop sock gameStateMVar = forever $ do
+receiverLoop :: Socket -> MVar GameState -> MVar Bool -> IO ()
+receiverLoop sock gameStateMVar gameOverMVar = forever $ do
     byteString <- recv sock 1024 
-    let serverMsg = decode (LBS.fromStrict byteString) :: ServerMessage
-    case serverMsg of
-        Welcome _ gs -> void $ swapMVar gameStateMVar gs
-        UpdateGame gs -> void $ swapMVar gameStateMVar gs
-        _ -> return ()
+    let sm = decode (LBS.fromStrict byteString) :: ServerMessage
+    handleMsg sm
+    where
+        handleMsg :: ServerMessage -> IO ()
+        handleMsg (Welcome _ gs)      = void $ swapMVar gameStateMVar gs
+        handleMsg (UpdateGame gs)     = void $ swapMVar gameStateMVar gs
+        handleMsg (UpdatePartial _ _) = return ()
+        handleMsg (PlayerJoined _)    = return ()
+        handleMsg (PlayerLeft _)      = return ()
+        handleMsg (GameOver _)        = void $ swapMVar gameOverMVar True
 
 -- Đổi chế độ chơi (gửi lên server)
 setMode :: Socket -> GameMode -> ClientState -> ClientState
