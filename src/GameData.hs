@@ -77,9 +77,10 @@ instance Binary Owner
 
 -- | Dữ liệu cho viên đạn
 data Bullet = Bullet
-  { bulletPos   :: Position
-  , bulletOwner :: Owner
+  { bulletPos     :: Position
+  , bulletOwner   :: Owner
   , bulletShooter :: Maybe PlayerID
+  , bulletDir     :: Float        -- ^ Direction multiplier: 1 = up, -1 = down
   } deriving (Show, Eq, Generic)
 instance Binary Bullet
 

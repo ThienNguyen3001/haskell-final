@@ -31,7 +31,7 @@ render sprites gs = pictures
     [ drawPlayfieldBg
     , drawItems     (itemSprite sprites)   (gameItems gs)
     , drawEnemies   (enemySprite sprites)  (gameEnemies gs)
-    , drawPlayers   (playerSprite sprites) (gamePlayer gs)
+    , drawPlayers   (gameMode gs) (playerSprite sprites) (gamePlayer gs)
     , drawBullets   (bulletSprite sprites) (gameBullets gs)
     , drawHUD       gs
     ]
@@ -65,12 +65,16 @@ drawPlayfieldBg =
          $ rectangleSolid (bgW - 2*margin) (bgH - 2*margin)
 
 -- Vẽ Phi thuyền (Player)
-drawPlayers :: Picture -> [Player] -> Picture
-drawPlayers sprite ps = pictures (map (drawPlayer sprite) ps)
+drawPlayers :: GameMode -> Picture -> [Player] -> Picture
+drawPlayers mode sprite ps = pictures (map (drawPlayer mode sprite) ps)
 
-drawPlayer :: Picture -> Player -> Picture
--- SỬA Ở ĐÂY: scale 2 2 -> scale 1 1
-drawPlayer sprite p = let (Position x y) = playerPos p in translate x y $ scale scalePlayer scalePlayer sprite
+drawPlayer :: GameMode -> Picture -> Player -> Picture
+drawPlayer mode sprite p =
+    let Position x y = playerPos p
+        oriented = case mode of
+                      PvP | playerID p == Player2 -> rotate 180 sprite
+                      _                            -> sprite
+    in translate x y $ scale scalePlayer scalePlayer oriented
 
 -- Vẽ Kẻ địch (Enemy)
 drawEnemies :: Picture -> [Enemy] -> Picture

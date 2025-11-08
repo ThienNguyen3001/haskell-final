@@ -72,7 +72,8 @@ receiverLoop sock state = forever $ do
     JoinGame pID            -> handleJoinGame sock state pID clientAddr
     PlayerAction pID action -> handlePlayerAction state pID action
     PlayerQuit pID          -> handlePlayerQuit state pID
-    SetMode mode            -> atomically $ writeTVar (gameState state) (initialGameState { gameMode = mode })
+    -- Only update the mode; do NOT reset the whole game state, to avoid dropping existing players
+    SetMode mode            -> atomically $ modifyTVar' (gameState state) (\gs -> gs { gameMode = mode })
     _                       -> return ()
 
 -- Game loop (~60 FPS)
@@ -103,12 +104,14 @@ gameLoop sock state = forever $ do
       then return gs
       else do
         -- Check if game can start based on mode requirements
+        -- Trong chế độ 2 người chơi (Coop, PvP) không cần đợi cả 2 người
+        -- Người chơi đầu tiên có thể bắt đầu chơi ngay
         let humanCount = length $ filter ((== Human) . playerType) (gamePlayer gs)
             canPlay = case gameMode gs of
-                        Solo    -> humanCount >= 1  -- Solo: 1 player only
+                        Solo    -> humanCount >= 1  -- Solo: 1 player
                         CoopBot -> humanCount >= 1  -- CoopBot: 1 player + bot
-                        Coop    -> humanCount >= 2  -- Coop: 2 players required
-                        PvP     -> humanCount == 2  -- PvP: exactly 2 players
+                        Coop    -> humanCount >= 1  -- Coop: có ít nhất 1 player (không cần đợi 2)
+                        PvP     -> humanCount >= 1  -- PvP: có ít nhất 1 player (không cần đợi 2)
         
         if not canPlay
           then return gs  -- Don't update game if requirements not met
@@ -140,23 +143,55 @@ gameLoop sock state = forever $ do
 -- Join/leave/actions
 handleJoinGame :: Socket -> ServerState -> PlayerID -> SockAddr -> IO ()
 handleJoinGame sock state pID addr = do
-  putStrLn $ "Player " ++ show pID ++ " joined from " ++ show addr
-  let startPos = if pID == Player1 then Position (-100) (-250) else Position 100 (-250)
-  let newPlayer = Player pID startPos 3 0 0 Idle False Human 0.0 0.0
-  (welcomeState, newCount) <- atomically $ do
+  putStrLn $ "Player " ++ show pID ++ " wants to join from " ++ show addr
+  
+  -- Check if this PlayerID is already taken
+  (actualPID, welcomeState, newCount, bothTaken) <- atomically $ do
     clientsMap <- readTVar (clients state)
-    let newClientsMap = Map.insert pID addr clientsMap
-    writeTVar (clients state) newClientsMap
-
     gs <- readTVar (gameState state)
-    let otherPlayers = filter ((/= pID) . playerID) (gamePlayer gs)
-    let finalPlayers = newPlayer : otherPlayers
-    let newGs = gs { gamePlayer = finalPlayers }
-    writeTVar (gameState state) newGs
-    return (newGs, Map.size newClientsMap)
-
-  putStrLn $ "Total clients: " ++ show newCount
-  void $ sendTo sock (LBS.toStrict $ encode (Welcome pID welcomeState)) addr
+    
+    -- Check if requested PlayerID is already in use
+    let existingPlayers = map playerID (gamePlayer gs)
+        playerTaken = pID `elem` existingPlayers
+        
+        -- If requested player is taken, assign the other player slot
+        finalPID = if playerTaken
+                   then if pID == Player1 then Player2 else Player1
+                   else pID
+        
+        -- Double check the assigned player isn't taken either
+        bothTaken = Player1 `elem` existingPlayers && Player2 `elem` existingPlayers
+    
+    if bothTaken
+      then do
+        -- Game is full, cannot join
+        return (pID, gs, Map.size clientsMap, True)
+      else do
+        -- Spawn positions depend on mode. In PvP, players should face each other vertically.
+        let mode = gameMode gs
+            startPos = case mode of
+              PvP -> case finalPID of
+                       Player1 -> Position (-100) (-250)  -- bottom
+                       Player2 -> Position 100 250        -- top
+              _   -> if finalPID == Player1 then Position (-100) (-250) else Position 100 (-250)
+        let newPlayer = Player finalPID startPos 3 0 0 Idle False Human 0.0 0.0
+        
+        let newClientsMap = Map.insert finalPID addr clientsMap
+        writeTVar (clients state) newClientsMap
+        
+        let otherPlayers = filter ((/= finalPID) . playerID) (gamePlayer gs)
+        let finalPlayers = newPlayer : otherPlayers
+        let newGs = gs { gamePlayer = finalPlayers }
+        writeTVar (gameState state) newGs
+        return (finalPID, newGs, Map.size newClientsMap, False)
+  
+  if bothTaken
+    then putStrLn "  Game is full! Cannot join."
+    else do
+      putStrLn $ "  Assigning player slot: " ++ show actualPID
+      putStrLn $ "Player " ++ show actualPID ++ " joined successfully"
+      putStrLn $ "Total clients: " ++ show newCount
+      void $ sendTo sock (LBS.toStrict $ encode (Welcome actualPID welcomeState)) addr
 
 handlePlayerQuit :: ServerState -> PlayerID -> IO ()
 handlePlayerQuit state pID = atomically $ do
@@ -183,14 +218,15 @@ runGameLogic deltaT gs = (finalGameState, newPlayerBullets ++ newEnemyBullets)
     -- Bot gets the PlayerID that is not taken by human player
     playersWithBot = case gameMode gs of
       Solo    -> filter ((== Human) . playerType) (gamePlayer gs)  -- Remove bot in solo
-      CoopBot -> let hasBot = any (== Bot) (map playerType (gamePlayer gs))
-                     humanIDs = map playerID $ filter ((== Human) . playerType) (gamePlayer gs)
-                     -- Assign bot to Player1 if no human has it, otherwise Player2
-                     botID = if Player1 `elem` humanIDs then Player2 else Player1
-                     botPos = if botID == Player1 then Position (-100) (-250) else Position 100 (-250)
-                 in if hasBot 
-                      then gamePlayer gs
-                      else Player botID botPos 3 0 0 Idle False Bot 0.0 0.0 : gamePlayer gs
+      CoopBot ->
+        let hasBot   = any (== Bot) (map playerType (gamePlayer gs))
+            humanIDs = map playerID $ filter ((== Human) . playerType) (gamePlayer gs)
+            -- Assign bot to Player1 if no human has it, otherwise Player2
+            botID    = if Player1 `elem` humanIDs then Player2 else Player1
+            botPos   = if botID == Player1 then Position (-100) (-250) else Position 100 (-250)
+        in if hasBot
+             then gamePlayer gs
+             else Player botID botPos 3 0 0 Idle False Bot 0.0 0.0 : gamePlayer gs
       _       -> filter ((== Human) . playerType) (gamePlayer gs)  -- Remove bots in Coop/PvP
 
     -- Let bot decide simple actions (use deltaT for shoot cooldown)
@@ -214,25 +250,30 @@ runGameLogic deltaT gs = (finalGameState, newPlayerBullets ++ newEnemyBullets)
     itemsAfterSpawn = updateItems deltaT itemsSpawned
 
     -- Players update and bullets fired
-    (updatedPlayers, newPlayerBullets) = updatePlayers deltaT botControlledPlayers
+    (updatedPlayers, newPlayerBullets) = updatePlayers (gameMode gs) deltaT botControlledPlayers
 
     -- Enemy spawn logic via timer - continuous spawning
     enemySpawnTimer' = gameEnemySpawnTimer gs - deltaT
     
+    -- Disable enemy spawning entirely in PvP mode
     (enemiesAfterSpawn, nextEnemySpawnTimer, newSpawnCount) =
-      if enemySpawnTimer' <= 0
-         then let nSpawned = gameEnemiesSpawned gs
-                  xSpawn = randX nSpawned
-                  -- Mix of enemy types based on level
-                  eType  = if (nSpawned `mod` 5) == 0 then BigEnemy else SmallEnemy
-                  hp     = if eType == BigEnemy then (2 + gameLevel gs `div` 3) else 1
-                  cd0    = if eType == BigEnemy then 0.5 else 1.0
-                  newEnemy = Enemy (Position xSpawn 200) eType Idle Alive hp cd0
-              in (newEnemy : gameEnemies gs, max 0.8 (2.0 - fromIntegral (gameLevel gs) * 0.05), 1)
-         else (gameEnemies gs, enemySpawnTimer', 0)
+      if gameMode gs == PvP
+         then ([], gameEnemySpawnTimer gs, 0)
+         else if enemySpawnTimer' <= 0
+           then let nSpawned = gameEnemiesSpawned gs
+                    xSpawn = randX nSpawned
+                    eType  = if (nSpawned `mod` 5) == 0 then BigEnemy else SmallEnemy
+                    hp     = if eType == BigEnemy then (2 + gameLevel gs `div` 3) else 1
+                    cd0    = if eType == BigEnemy then 0.5 else 1.0
+                    newEnemy = Enemy (Position xSpawn 200) eType Idle Alive hp cd0
+                in (newEnemy : gameEnemies gs, max 0.8 (2.0 - fromIntegral (gameLevel gs) * 0.05), 1)
+           else (gameEnemies gs, enemySpawnTimer', 0)
 
     -- Enemies update and bullets fired, track escaped enemies
-    (updatedEnemies, newEnemyBullets, escapedCount) = updateEnemiesWithMode (gameMode gs) deltaT enemiesAfterSpawn
+    (updatedEnemies, newEnemyBullets, escapedCount) =
+      if gameMode gs == PvP
+         then ([], [], 0)
+         else updateEnemiesWithMode (gameMode gs) deltaT enemiesAfterSpawn
 
     -- Move existing bullets
     updatedOldBullets = updateBullets deltaT (gameBullets gs)
@@ -255,9 +296,9 @@ runGameLogic deltaT gs = (finalGameState, newPlayerBullets ++ newEnemyBullets)
     finalGameState = handleCollisions tempGameState
 
 -- Updates
-updatePlayers :: Float -> [Player] -> ([Player], [Bullet])
-updatePlayers deltaT players =
-  let (ps, bs) = unzip (map (updatePlayer deltaT) players)
+updatePlayers :: GameMode -> Float -> [Player] -> ([Player], [Bullet])
+updatePlayers mode deltaT players =
+  let (ps, bs) = unzip (map (updatePlayer mode deltaT) players)
       -- Handle bot respawning
       respawnedPs = map (handleBotRespawn deltaT) ps
   in (respawnedPs, concat bs)
@@ -267,41 +308,40 @@ handleBotRespawn :: Float -> Player -> Player
 handleBotRespawn deltaT p
   | playerType p == Bot && playerLives p <= 0 && playerRespawnTimer p > 0 =
       let newTimer = playerRespawnTimer p - deltaT
-      in if newTimer <= 0
-         then -- Respawn bot with full health at spawn position
-              let spawnPos = if playerID p == Player1 then Position (-100) (-250) else Position 100 (-250)
-              in p { playerLives = 3
-                   , playerPos = spawnPos
-                   , playerRespawnTimer = 0.0
-                   , playerAction = Idle
-                   , playerWantsToShoot = False }
-         else p { playerRespawnTimer = newTimer }
+   in if newTimer <= 0
+     then -- Respawn bot with full health at spawn position (PvP not used for bots)
+       let spawnPos = if playerID p == Player1 then Position (-100) (-250) else Position 100 (-250)
+       in p { playerLives = 3
+         , playerPos = spawnPos
+         , playerRespawnTimer = 0.0
+         , playerAction = Idle
+         , playerWantsToShoot = False }
+     else p { playerRespawnTimer = newTimer }
   | otherwise = p
 
-updatePlayer :: Float -> Player -> (Player, [Bullet])
-updatePlayer deltaT p =
+updatePlayer :: GameMode -> Float -> Player -> (Player, [Bullet])
+updatePlayer mode deltaT p =
   let (dx, dy) = case playerAction p of
         MoveUp    -> (0, playerSpeed * deltaT)
         MoveDown  -> (0, -playerSpeed * deltaT)
         MoveLeft  -> (-playerSpeed * deltaT, 0)
         MoveRight -> (playerSpeed * deltaT, 0)
         _         -> (0, 0)
-      (Position x y) = playerPos p
+      Position x y = playerPos p
       newPos = Position (clamp (x + dx) (-screenWidth/2) (screenWidth/2))
                         (clamp (y + dy) (-screenHeight/2) (screenHeight/2))
-      
-      -- Update shoot cooldown
       newCooldown = max 0 (playerShootCooldown p - deltaT)
       canShoot = newCooldown <= 0
-      
+      bulletDirVal = if mode == PvP && playerID p == Player2 then (-1) else 1
+      bulletSpawnY = if bulletDirVal == 1 then y + entitySize else y - entitySize
       newBullet = if playerWantsToShoot p && canShoot
-                  then [Bullet (Position x (y + entitySize)) PlayerOwned (Just $ playerID p)]
-                  else []
-      
-      -- Reset cooldown if shot fired (0.2 seconds = 5 shots per second max)
+                    then [Bullet (Position x bulletSpawnY) PlayerOwned (Just $ playerID p) bulletDirVal]
+                    else []
       finalCooldown = if playerWantsToShoot p && canShoot then 0.2 else newCooldown
-      
-  in (p { playerPos = newPos, playerWantsToShoot = False, playerShootCooldown = finalCooldown }, newBullet)
+      p' = p { playerPos = newPos
+             , playerWantsToShoot = False
+             , playerShootCooldown = finalCooldown }
+  in (p', newBullet)
 
 -- Update enemies with mode-based speed
 -- Update enemies with mode-based speed and track escaped
@@ -315,7 +355,7 @@ updateEnemiesWithMode mode deltaT enemies =
         in if cd' <= 0
               then ( e { enemyPos = newPos
                         , enemyFireCd = resetCd (enemyType e) }
-                   , [Bullet (Position x (y - entitySize)) EnemyOwned Nothing] )
+                   , [Bullet (Position x (y - entitySize)) EnemyOwned Nothing (-1)] )
               else ( e { enemyPos = newPos, enemyFireCd = cd' }
                    , [] )
       (es, bs) = unzip (map process enemies)
@@ -332,7 +372,7 @@ updateBullets :: Float -> [Bullet] -> [Bullet]
 updateBullets deltaT = mapMaybe $ \b ->
   let (Position x y) = bulletPos b
       dy = case bulletOwner b of
-             PlayerOwned -> bulletSpeed * deltaT
+             PlayerOwned -> bulletSpeed * deltaT * bulletDir b
              EnemyOwned  -> -bulletSpeed * deltaT
       newPos = Position x (y + dy)
   in if abs (posY newPos) > screenHeight / 2

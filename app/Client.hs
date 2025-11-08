@@ -36,6 +36,7 @@ data ClientState = ClientState
     , selPlayer       :: PlayerID
     , gameOver        :: Bool
     , gameOverMVar    :: MVar Bool  -- Add reference to MVar
+    , playerIDMVar    :: MVar PlayerID  -- Add MVar for actual PlayerID from server
     }
 
 main :: IO ()
@@ -74,7 +75,8 @@ main = withSocketsDo $ do
     
     gameStateMVar <- newMVar initialGameState
     gameOverMVar <- newMVar False
-    _ <- forkIO $ receiverLoop sock gameStateMVar gameOverMVar
+    playerIDMVar <- newMVar Player1  -- Will be updated when server sends Welcome
+    _ <- forkIO $ receiverLoop sock gameStateMVar gameOverMVar playerIDMVar
 
     -- 4. XÁC ĐỊNH PLAYERID TỪ THAM SỐ DÒNG LỆNH
     -- Check if "player2" is in arguments
@@ -94,11 +96,12 @@ main = withSocketsDo $ do
             , selPlayer = pID
             , gameOver = False
             , gameOverMVar = gameOverMVar
+            , playerIDMVar = playerIDMVar
             }
 
     let customBackground = makeColorI 25 25 112 255
     putStrLn "Starting game loop..."
-    play displayMode customBackground 60 initialState drawHandler inputHandler (updateHandler gameStateMVar gameOverMVar)
+    play displayMode customBackground 60 initialState drawHandler inputHandler (updateHandler gameStateMVar gameOverMVar playerIDMVar)
 
 -- Hàm load ảnh phụ trợ để xử lý lỗi
 loadJuicyPNG_ :: FilePath -> IO Picture
@@ -189,10 +192,11 @@ inputHandler event state =
             _ -> state
 
 -- 3. HÀM UPDATE
-updateHandler :: MVar GameState -> MVar Bool -> Float -> ClientState -> ClientState
-updateHandler gsVar goVar _ currentState = unsafePerformIO $ do
+updateHandler :: MVar GameState -> MVar Bool -> MVar PlayerID -> Float -> ClientState -> ClientState
+updateHandler gsVar goVar pidVar _ currentState = unsafePerformIO $ do
     newGameState <- readMVar gsVar
     isOver <- readMVar goVar
+    actualPlayerID <- readMVar pidVar  -- Read actual PlayerID from server
     let currentPhase = uiPhase currentState
         nextPhase 
           | currentPhase == InMenu = InMenu  -- Never auto-transition from menu
@@ -201,6 +205,7 @@ updateHandler gsVar goVar _ currentState = unsafePerformIO $ do
     return $ currentState { gameState = newGameState
                           , uiPhase = nextPhase
                           , gameOver = isOver
+                          , myPlayerID = actualPlayerID  -- Update with server-assigned PlayerID
                           }
 
 -- CÁC HÀM PHỤ TRỢ KHÁC VÀ LUỒNG MẠNG
@@ -210,14 +215,17 @@ sendAction sock pId action state = unsafePerformIO $ do
     void $ send sock (LBS.toStrict $ encode msg)
     return state
 
-receiverLoop :: Socket -> MVar GameState -> MVar Bool -> IO ()
-receiverLoop sock gameStateMVar gameOverMVar = forever $ do
+receiverLoop :: Socket -> MVar GameState -> MVar Bool -> MVar PlayerID -> IO ()
+receiverLoop sock gameStateMVar gameOverMVar playerIDMVar = forever $ do
     byteString <- recv sock 1024 
     let sm = decode (LBS.fromStrict byteString) :: ServerMessage
     handleMsg sm
     where
         handleMsg :: ServerMessage -> IO ()
-        handleMsg (Welcome _ gs)      = void $ swapMVar gameStateMVar gs
+        handleMsg (Welcome pID gs) = do
+            void $ swapMVar gameStateMVar gs
+            void $ swapMVar playerIDMVar pID  -- Update actual PlayerID from server
+            putStrLn $ "Server assigned us PlayerID: " ++ show pID
         handleMsg (UpdateGame gs)     = void $ swapMVar gameStateMVar gs
         handleMsg (UpdatePartial _ _) = return ()
         handleMsg (PlayerJoined _)    = return ()
