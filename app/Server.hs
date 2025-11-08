@@ -9,7 +9,7 @@ import Data.Binary (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
 import Network.Socket
 import Network.Socket.ByteString (recvFrom, sendTo)
-import Data.Maybe (mapMaybe)
+import Data.Maybe (mapMaybe, maybeToList)
 
 import GameData
 import GameMes
@@ -72,9 +72,146 @@ receiverLoop sock state = forever $ do
     JoinGame pID            -> handleJoinGame sock state pID clientAddr
     PlayerAction pID action -> handlePlayerAction state pID action
     PlayerQuit pID          -> handlePlayerQuit state pID
-    -- Only update the mode; do NOT reset the whole game state, to avoid dropping existing players
-    SetMode mode            -> atomically $ modifyTVar' (gameState state) (\gs -> gs { gameMode = mode })
+    SetMode mode            -> do
+      atomically $ handleSetModeFromAddr state mode clientAddr
+      when (mode == Solo || mode == CoopBot) $ do
+        -- Offline modes: keep only one client mapped to Player1
+        mWelcome <- atomically $ do
+          cs <- readTVar (clients state)
+          gs <- readTVar (gameState state)
+          let anyAddr = if Map.null cs then Nothing else Just (snd (head (Map.toList cs)))
+              cs' = case anyAddr of
+                      Just a  -> Map.singleton Player1 a
+                      Nothing -> Map.empty
+              humans = filter ((== Human) . playerType) (gamePlayer gs)
+              pid = if null humans then Player1 else playerID (head humans)
+          writeTVar (clients state) cs'
+          return (fmap (\a -> (pid, gs, a)) anyAddr)
+        forM_ (maybeToList mWelcome) $ \(pid, gsSnap, a) ->
+          void $ sendTo sock (LBS.toStrict $ encode (Welcome pid gsSnap)) a
+      when (mode == Solo) $ do
+        (shouldSend, pid, gsSnap) <- atomically $ do
+          cs <- readTVar (clients state)
+          gs <- readTVar (gameState state)
+          let humans = filter ((== Human) . playerType) (gamePlayer gs)
+              chosen = case humans of
+                         []     -> Player1
+                         (h:_)  -> playerID h
+              already = Map.lookup chosen cs == Just clientAddr
+              csNoAddr = Map.filter (/= clientAddr) cs
+              cs' = Map.insert chosen clientAddr csNoAddr
+          writeTVar (clients state) cs'
+          return (not already, chosen, gs)
+        when shouldSend $ do
+          void $ sendTo sock (LBS.toStrict $ encode (Welcome pid gsSnap)) clientAddr
     _                       -> return ()
+
+-- Helper to reset round when mode changes while preserving connected human players
+handleSetMode :: ServerState -> GameMode -> STM ()
+handleSetMode state mode = modifyTVar' (gameState state) $ \gs ->
+  let
+      resetPos pid =
+        case mode of
+          PvP ->
+            case pid of
+              Player1 -> Position (-100) (-250)
+              Player2 -> Position 100 250
+          _ ->
+            case pid of
+              Player1 -> Position (-100) (-250)
+              Player2 -> Position 100 (-250)
+
+      resetHuman p =
+        if playerType p == Human
+          then p { playerPos = resetPos (playerID p)
+                 , playerLives = 3
+                 , playerScore = 0
+                 , playerDeaths = 0
+                 , playerAction = Idle
+                 , playerWantsToShoot = False
+                 , playerShootCooldown = 0
+                 , playerRespawnTimer = 0 }
+          else p
+
+      humans = filter ((== Human) . playerType) (gamePlayer gs)
+      resetPlayers = map resetHuman humans
+  in gs { gameMode = mode
+    , gamePlayer = case mode of
+        Solo ->
+          let pickOne = case resetPlayers of
+                [] -> []
+                hs -> let mP1 = filter ((== Player1) . playerID) hs
+                      in if not (null mP1) then [head mP1] else [head hs]
+          in pickOne
+        _ -> resetPlayers
+    , gameEnemies = []
+    , gameItems = []
+    , gameBullets = []
+    , gameEnemiesLeft = 0
+    , gameEnemiesSpawned = 0
+    , gameSpawnTimer = 5.0
+    , gameEnemySpawnTimer = 2.0
+    , gameLevel = 0
+    , gameEnemiesEscaped = 0
+    , isShooting = False }
+
+-- Variant that keeps the player who sent the request when switching to Solo
+handleSetModeFromAddr :: ServerState -> GameMode -> SockAddr -> STM ()
+handleSetModeFromAddr state mode addr = do
+  cs <- readTVar (clients state)
+  modifyTVar' (gameState state) $ \gs ->
+    let
+      resetPos pid =
+        case mode of
+          PvP -> case pid of
+                   Player1 -> Position (-100) (-250)
+                   Player2 -> Position 100 250
+          _   -> case pid of
+                   Player1 -> Position (-100) (-250)
+                   Player2 -> Position 100 (-250)
+
+      resetHuman p =
+        if playerType p == Human
+          then p { playerPos = resetPos (playerID p)
+                 , playerLives = 3
+                 , playerScore = 0
+                 , playerDeaths = 0
+                 , playerAction = Idle
+                 , playerWantsToShoot = False
+                 , playerShootCooldown = 0
+                 , playerRespawnTimer = 0 }
+          else p
+
+      humans = filter ((== Human) . playerType) (gamePlayer gs)
+      resetPlayers = map resetHuman humans
+
+      keepIdList = [ pid | (pid, a) <- Map.toList cs, a == addr ]
+      selectedSolo =
+        case keepIdList of
+          (pid:_) ->
+            let kept = filter ((== pid) . playerID) resetPlayers
+            in if null kept
+                 then let mP1 = filter ((== Player1) . playerID) resetPlayers
+                      in if not (null mP1) then [head mP1] else take 1 resetPlayers
+                 else kept
+          [] -> let mP1 = filter ((== Player1) . playerID) resetPlayers
+                in if not (null mP1) then [head mP1] else take 1 resetPlayers
+
+      finalPlayers = case mode of
+                       Solo -> selectedSolo
+                       _    -> resetPlayers
+    in gs { gameMode = mode
+          , gamePlayer = finalPlayers
+          , gameEnemies = []
+          , gameItems = []
+          , gameBullets = []
+          , gameEnemiesLeft = 0
+          , gameEnemiesSpawned = 0
+          , gameSpawnTimer = 5.0
+          , gameEnemySpawnTimer = 2.0
+          , gameLevel = 0
+          , gameEnemiesEscaped = 0
+          , isShooting = False }
 
 -- Game loop (~60 FPS)
 gameLoop :: Socket -> ServerState -> IO ()
@@ -131,61 +268,66 @@ gameLoop sock state = forever $ do
         PvP -> anyHumanDead  -- In PvP, any human death = game over (the other wins)
         _   -> allHumansDead || tooManyEscaped  -- In other modes, all humans must die OR too many escaped
       
-      serverMsg 
+      -- Detect newly eliminated humans (their lives just hit 0 but game not over yet in Coop)
+      eliminatedPlayers = [ playerID p | p <- humans, playerLives p <= 0 ]
+      baseMsg 
         | isGameOver = GameOver False
         | otherwise = UpdateGame updatedGameState
-      
-      encodedMsg = LBS.toStrict $ encode serverMsg
+      baseEncoded = LBS.toStrict $ encode baseMsg
   
-  forM_ (Map.elems clientMap) $ \addr -> sendTo sock encodedMsg addr
+  -- Broadcast base update / game over
+  forM_ (Map.elems clientMap) $ \addr -> sendTo sock baseEncoded addr
+  -- If not fully game over and we're in Coop or PvP, notify eliminations individually
+  when (not (null eliminatedPlayers) && not isGameOver && gameMode updatedGameState `elem` [Coop, PvP]) $ do
+    forM_ eliminatedPlayers $ \pid -> do
+      let elimMsg = PlayerEliminated pid
+      let emBytes = LBS.toStrict $ encode elimMsg
+      forM_ (Map.elems clientMap) $ \addr -> sendTo sock emBytes addr
   threadDelay (floor (deltaT * 1000 * 1000))
+  
 
 -- Join/leave/actions
 handleJoinGame :: Socket -> ServerState -> PlayerID -> SockAddr -> IO ()
-handleJoinGame sock state pID addr = do
-  putStrLn $ "Player " ++ show pID ++ " wants to join from " ++ show addr
-  
-  -- Check if this PlayerID is already taken
-  (actualPID, welcomeState, newCount, bothTaken) <- atomically $ do
+handleJoinGame sock state requestedPID addr = do
+  putStrLn $ "Player " ++ show requestedPID ++ " wants to join from " ++ show addr
+  (actualPID, welcomeState, newCount, full) <- atomically $ do
     clientsMap <- readTVar (clients state)
     gs <- readTVar (gameState state)
-    
-    -- Check if requested PlayerID is already in use
-    let existingPlayers = map playerID (gamePlayer gs)
-        playerTaken = pID `elem` existingPlayers
-        
-        -- If requested player is taken, assign the other player slot
-        finalPID = if playerTaken
-                   then if pID == Player1 then Player2 else Player1
-                   else pID
-        
-        -- Double check the assigned player isn't taken either
-        bothTaken = Player1 `elem` existingPlayers && Player2 `elem` existingPlayers
-    
-    if bothTaken
-      then do
-        -- Game is full, cannot join
-        return (pID, gs, Map.size clientsMap, True)
+    let mode     = gameMode gs
+        existing = map playerID (gamePlayer gs)
+        humans   = filter ((== Human) . playerType) (gamePlayer gs)
+        -- Offline modes always use Player1
+        targetPID = case mode of
+                      Solo    -> Player1
+                      CoopBot -> Player1
+                      Coop    -> if requestedPID == Player1 && Player1 `elem` existing
+                                   then Player2 else requestedPID
+                      PvP     -> if requestedPID == Player1 && Player1 `elem` existing
+                                   then Player2 else requestedPID
+        fullGame = mode `elem` [Coop, PvP] && Player1 `elem` existing && Player2 `elem` existing
+    if fullGame
+      then return (requestedPID, gs, Map.size clientsMap, True)
       else do
-        -- Spawn positions depend on mode. In PvP, players should face each other vertically.
-        let mode = gameMode gs
-            startPos = case mode of
-              PvP -> case finalPID of
-                       Player1 -> Position (-100) (-250)  -- bottom
-                       Player2 -> Position 100 250        -- top
-              _   -> if finalPID == Player1 then Position (-100) (-250) else Position 100 (-250)
-        let newPlayer = Player finalPID startPos 3 0 0 Idle False Human 0.0 0.0
-        
-        let newClientsMap = Map.insert finalPID addr clientsMap
-        writeTVar (clients state) newClientsMap
-        
-        let otherPlayers = filter ((/= finalPID) . playerID) (gamePlayer gs)
-        let finalPlayers = newPlayer : otherPlayers
-        let newGs = gs { gamePlayer = finalPlayers }
-        writeTVar (gameState state) newGs
-        return (finalPID, newGs, Map.size newClientsMap, False)
-  
-  if bothTaken
+        let startPos = case mode of
+              PvP -> case targetPID of
+                       Player1 -> Position (-100) (-250)
+                       Player2 -> Position 100 250
+              _   -> if targetPID == Player1 then Position (-100) (-250) else Position 100 (-250)
+            newPlayer = Player targetPID startPos 3 0 0 Idle False Human 0.0 0.0
+            clientsMap' = case mode of
+                            Solo    -> Map.singleton Player1 addr
+                            CoopBot -> Map.singleton Player1 addr
+                            _       -> Map.insert targetPID addr clientsMap
+        writeTVar (clients state) clientsMap'
+        let filteredOthers = filter ((/= targetPID) . playerID) (gamePlayer gs)
+            finalPlayers  = case mode of
+                              Solo    -> [newPlayer]
+                              CoopBot -> [newPlayer]  -- bot added by logic
+                              _       -> newPlayer : filteredOthers
+            gs' = gs { gamePlayer = finalPlayers }
+        writeTVar (gameState state) gs'
+        return (targetPID, gs', Map.size clientsMap', False)
+  if full
     then putStrLn "  Game is full! Cannot join."
     else do
       putStrLn $ "  Assigning player slot: " ++ show actualPID
@@ -217,7 +359,15 @@ runGameLogic deltaT gs = (finalGameState, newPlayerBullets ++ newEnemyBullets)
     -- Ensure bot exists in CoopBot mode only, remove bot in Solo mode
     -- Bot gets the PlayerID that is not taken by human player
     playersWithBot = case gameMode gs of
-      Solo    -> filter ((== Human) . playerType) (gamePlayer gs)  -- Remove bot in solo
+      Solo    ->
+        let humans = filter ((== Human) . playerType) (gamePlayer gs)
+            pickOne =
+              case humans of
+                [] -> []
+                hs ->
+                  let mP1 = filter ((== Player1) . playerID) hs
+                  in if not (null mP1) then [head mP1] else [head hs]
+        in pickOne  -- Keep only one human in solo
       CoopBot ->
         let hasBot   = any (== Bot) (map playerType (gamePlayer gs))
             humanIDs = map playerID $ filter ((== Human) . playerType) (gamePlayer gs)
@@ -391,76 +541,70 @@ updateItems dt = mapMaybe $ \it ->
 
 -- Collisions and scoring
 handleCollisions :: GameState -> GameState
-handleCollisions gs =
-  let players = gamePlayer gs
-      enemies = gameEnemies gs
-      bullets = gameBullets gs
-      items   = gameItems gs
-      mode    = gameMode gs
+handleCollisions gs = gs { gamePlayer = scoredPlayers
+                         , gameEnemies = updatedEnemies
+                         , gameBullets = remainingPlayerBullets ++ remainingEnemyBullets
+                         , gameItems   = remainingItems ++ enemyDrops (gameEnemiesSpawned gs) hitEnemies }
+  where
+    players = gamePlayer gs
+    enemies = gameEnemies gs
+    bullets = gameBullets gs
+    items   = gameItems gs
+    mode    = gameMode gs
 
-      playerBullets = filter ((== PlayerOwned) . bulletOwner) bullets
-      enemyBullets  = filter ((== EnemyOwned) . bulletOwner) bullets
+    playerBullets = filter ((== PlayerOwned) . bulletOwner) bullets
+    enemyBullets  = filter ((== EnemyOwned) . bulletOwner) bullets
 
-      -- In PvP mode, check for player-vs-player bullet hits
-      (hitByPvP, remainingPvPBullets, survivingPlayers) =
-        if mode == PvP
-          then checkPvPCollisions playerBullets players
-          else ([], playerBullets, players)
+    (hitByPvP, remainingPvPBullets, survivingPlayers) =
+      if mode == PvP
+        then checkPvPCollisions playerBullets players
+        else ([], playerBullets, players)
 
-      (hitEnemies, hitPlayerBullets, remainingPlayerBullets) =
-        checkBulletEnemyCollisions remainingPvPBullets enemies
-      (hitPlayers, remainingEnemyBullets) =
-        checkBulletPlayerCollisions enemyBullets survivingPlayers
+    (hitEnemies, hitPlayerBullets, remainingPlayerBullets) =
+      checkBulletEnemyCollisions remainingPvPBullets enemies
+    (hitPlayers, remainingEnemyBullets) =
+      checkBulletPlayerCollisions enemyBullets survivingPlayers
 
-      -- Players touching enemies also lose 1 life (once per tick)
-      touchedPlayers = [ p | p <- survivingPlayers
-                           , any (\e -> isColliding (playerPos p) (enemyPos e) entitySize) enemies ]
+    touchedPlayers = [ p | p <- survivingPlayers
+                         , any (\e -> isColliding (playerPos p) (enemyPos e) entitySize) enemies ]
 
-      updatedEnemies = filter (`notElem` hitEnemies) enemies
+    updatedEnemies = filter (`notElem` hitEnemies) enemies
 
-      hitPlayerIDs = nub (map playerID hitPlayers ++ map playerID touchedPlayers ++ map playerID hitByPvP)
-      
-      -- Update players: reduce lives if hit, set respawn timer for dead bots
-      updatedPlayers = map (\p -> 
-        if playerID p `elem` hitPlayerIDs
-          then let newLives = playerLives p - 1
-                   newDeaths = playerDeaths p + (if newLives <= 0 then 1 else 0)
-               in if newLives <= 0 && playerType p == Bot
-                  then p { playerLives = 0, playerDeaths = newDeaths, playerRespawnTimer = 3.0 }  -- Bot respawns in 3s
-                  else p { playerLives = newLives, playerDeaths = newDeaths }
-          else p
-        ) survivingPlayers
-      
-      -- Keep all players (including dead bots waiting to respawn)
-      -- Only remove human players with 0 lives
-      alivePlayers = filter (\p -> playerLives p > 0 || (playerType p == Bot && playerRespawnTimer p > 0)) updatedPlayers
+    hitPlayerIDs = nub (map playerID hitPlayers ++ map playerID touchedPlayers ++ map playerID hitByPvP)
 
-      (remainingItems, playersAfterItems) = foldr
-        (\it (accItems, accPlayers) ->
-          let collided = any (\p -> isColliding (playerPos p) (itemPos it) entitySize) accPlayers
-          in if collided
-               then ( accItems
-                    , map (\p -> if isColliding (playerPos p) (itemPos it) entitySize
-                                   then p { playerLives = playerLives p + itemHeal it }
-                                   else p) accPlayers)
-               else (it:accItems, accPlayers))
-        ([], alivePlayers)
-        items
+    updatedPlayers = map updateOne survivingPlayers
+    updateOne p =
+      if playerID p `elem` hitPlayerIDs
+        then
+          let newLives = playerLives p - 1
+              newDeaths = playerDeaths p + (if newLives <= 0 then 1 else 0)
+          in if newLives <= 0 && playerType p == Bot
+                then p { playerLives = 0, playerDeaths = newDeaths, playerRespawnTimer = 3.0 }
+                else p { playerLives = newLives, playerDeaths = newDeaths }
+        else p
 
-      shooterHits = foldr (\b acc -> case bulletShooter b of
-                            Just pid -> Map.insertWith (+) pid 1 acc
-                            Nothing  -> acc)
-                      Map.empty
-                      hitPlayerBullets
+    alivePlayers = filter keepPlayer updatedPlayers
+    keepPlayer p = case playerType p of
+                     Human -> True
+                     Bot   -> playerLives p > 0 || playerRespawnTimer p > 0
 
-      scoredPlayers = map (\p -> p { playerScore = playerScore p
-                                      + Map.findWithDefault 0 (playerID p) shooterHits })
-                       playersAfterItems
+    (remainingItems, playersAfterItems) = foldr collectItem ([], alivePlayers) items
+    collectItem it (accItems, accPlayers) =
+      let collidedPlayers = any (\p -> isColliding (playerPos p) (itemPos it) entitySize) accPlayers
+      in if collidedPlayers
+           then ( accItems
+                , map (\p -> if isColliding (playerPos p) (itemPos it) entitySize
+                               then p { playerLives = playerLives p + itemHeal it }
+                               else p) accPlayers )
+           else (it:accItems, accPlayers)
 
-  in gs { gamePlayer = scoredPlayers
-        , gameEnemies = updatedEnemies
-        , gameBullets = remainingPlayerBullets ++ remainingEnemyBullets
-        , gameItems   = remainingItems ++ enemyDrops (gameEnemiesSpawned gs) hitEnemies }
+    shooterHits = foldr countHit Map.empty hitPlayerBullets
+    countHit b acc = case bulletShooter b of
+                       Just pid -> Map.insertWith (+) pid 1 acc
+                       Nothing  -> acc
+
+    scoredPlayers = map addScore playersAfterItems
+    addScore p = p { playerScore = playerScore p + Map.findWithDefault 0 (playerID p) shooterHits }
 
 -- Drop items at enemy death positions with 30% chance, deterministic by spawn count
 enemyDrops :: Int -> [Enemy] -> [Item]

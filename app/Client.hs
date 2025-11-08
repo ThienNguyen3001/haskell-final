@@ -14,7 +14,7 @@ import Network.Socket.ByteString (send, recv)
 import qualified Data.ByteString.Lazy as LBS
 import Data.Binary (encode, decode)
 import Control.Concurrent (forkIO)
-import Control.Monad (forever, void)
+import Control.Monad (forever, void, when)
 import Control.Concurrent.MVar
 
 -- Game Modules
@@ -231,6 +231,10 @@ receiverLoop sock gameStateMVar gameOverMVar playerIDMVar = forever $ do
         handleMsg (PlayerJoined _)    = return ()
         handleMsg (PlayerLeft _)      = return ()
         handleMsg (GameOver _)        = void $ swapMVar gameOverMVar True
+        handleMsg (PlayerEliminated pid) = do
+            me <- readMVar playerIDMVar
+            when (pid == me) $ do
+                void $ swapMVar gameOverMVar True
 
 -- Đổi chế độ chơi (gửi lên server)
 setMode :: Socket -> GameMode -> ClientState -> ClientState

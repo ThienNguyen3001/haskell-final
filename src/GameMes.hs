@@ -35,6 +35,7 @@ data ServerMessage
   | PlayerJoined PlayerID               -- thông báo có người mới vào
   | PlayerLeft PlayerID                 -- thông báo người chơi rời khỏi game
   | GameOver Bool                       -- thông báo kết thúc trò chơi (True = thắng, False = thua)
+  | PlayerEliminated PlayerID           -- người chơi này đã bị loại (dùng cho Coop khi một người chết trước)
   deriving (Show, Eq, Generic)
 
 instance Binary ServerMessage 
