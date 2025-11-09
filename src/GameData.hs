@@ -36,6 +36,16 @@ data PlayerID
 instance Binary PlayerID
 
 -- | Dữ liệu cho người chơi (ĐÃ SỬA)
+-- | Trạng thái FSM cho Bot AI
+data BotState
+  = BotSpawn       -- vừa xuất hiện / respawn
+  | BotCombat      -- đang chiến đấu bình thường (máu khỏe)
+  | BotLowHealth   -- máu thấp, vẫn bắn nhưng thận trọng tìm item
+  | BotSeekItem    -- ưu tiên di chuyển tới item để hồi phục
+  | BotDead        -- đã chết, chờ hồi sinh
+  deriving (Show, Eq, Generic)
+instance Binary BotState
+
 data Player = Player
   { playerID       :: PlayerID 
   , playerPos      :: Position     -- vị trí (x, y)
@@ -46,7 +56,9 @@ data Player = Player
   , playerWantsToShoot :: Bool     -- cờ báo hiệu muốn bắn (do 'Shoot' là sự kiện 1 lần)
   , playerType     :: PlayerType   -- human or bot
   , playerShootCooldown :: Float   -- cooldown timer for shooting (giây)
-  , playerRespawnTimer :: Float    -- respawn timer for bots (giây), 0 = alive
+  , playerRespawnTimer :: Float    -- respawn timer cho bot (giây), 0 = alive
+  , playerDamageTaken :: Int       -- tổng HP đã mất (giảm khi ăn item)
+  , playerBotState :: BotState     -- FSM state (Human: giữ BotCombat mặc định)
   } deriving (Show, Eq, Generic)
 instance Binary Player
 

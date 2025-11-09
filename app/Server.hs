@@ -128,7 +128,6 @@ handleSetMode state mode = modifyTVar' (gameState state) $ \gs ->
             case pid of
               Player1 -> Position (-100) (-250)
               Player2 -> Position 100 (-250)
-
       resetHuman p =
         if playerType p == Human
           then p { playerPos = resetPos (playerID p)
@@ -138,9 +137,10 @@ handleSetMode state mode = modifyTVar' (gameState state) $ \gs ->
                  , playerAction = Idle
                  , playerWantsToShoot = False
                  , playerShootCooldown = 0
-                 , playerRespawnTimer = 0 }
+                 , playerRespawnTimer = 0
+                 , playerDamageTaken = 0
+                 , playerBotState = BotCombat }
           else p
-
       humans = filter ((== Human) . playerType) (gamePlayer gs)
       resetPlayers = map resetHuman humans
   in gs { gameMode = mode
@@ -177,7 +177,6 @@ handleSetModeFromAddr state mode addr = do
           _   -> case pid of
                    Player1 -> Position (-100) (-250)
                    Player2 -> Position 100 (-250)
-
       resetHuman p =
         if playerType p == Human
           then p { playerPos = resetPos (playerID p)
@@ -187,12 +186,12 @@ handleSetModeFromAddr state mode addr = do
                  , playerAction = Idle
                  , playerWantsToShoot = False
                  , playerShootCooldown = 0
-                 , playerRespawnTimer = 0 }
+                 , playerRespawnTimer = 0
+                 , playerDamageTaken = 0
+                 , playerBotState = BotCombat }
           else p
-
       humans = filter ((== Human) . playerType) (gamePlayer gs)
       resetPlayers = map resetHuman humans
-
       keepIdList = [ pid | (pid, a) <- Map.toList cs, a == addr ]
       selectedSolo =
         case keepIdList of
@@ -321,7 +320,7 @@ handleJoinGame sock state requestedPID addr = do
                        Player1 -> Position (-100) (-250)
                        Player2 -> Position 100 250
               _   -> if targetPID == Player1 then Position (-100) (-250) else Position 100 (-250)
-            newPlayer = Player targetPID startPos 3 0 0 Idle False Human 0.0 0.0
+            newPlayer = Player targetPID startPos 3 0 0 Idle False Human 0.0 0.0 0 BotCombat
             clientsMap' = case mode of
                             Solo    -> Map.singleton Player1 addr
                             CoopBot -> Map.singleton Player1 addr
@@ -379,19 +378,18 @@ runGameLogic deltaT gs = (finalGameState, newPlayerBullets ++ newEnemyBullets)
       CoopBot ->
         let hasBot   = any (== Bot) (map playerType (gamePlayer gs))
             humanIDs = map playerID $ filter ((== Human) . playerType) (gamePlayer gs)
-            -- Assign bot to Player1 if no human has it, otherwise Player2
             botID    = if Player1 `elem` humanIDs then Player2 else Player1
             botPos   = if botID == Player1 then Position (-100) (-250) else Position 100 (-250)
         in if hasBot
              then gamePlayer gs
-             else Player botID botPos 3 0 0 Idle False Bot 0.0 0.0 : gamePlayer gs
+             else Player botID botPos 3 0 0 Idle False Bot 0.0 0.0 0 BotSpawn : gamePlayer gs
       _       -> filter ((== Human) . playerType) (gamePlayer gs)  -- Remove bots in Coop/PvP
 
     -- Let bot decide simple actions (use deltaT for shoot cooldown)
     -- Don't control dead bots waiting to respawn
     botControlledPlayers = map (\p -> 
-      if playerType p == Bot && playerLives p > 0
-        then botLogic deltaT p (gameEnemies gs) (gameItems gs)
+      if playerType p == Bot
+        then botStepFSM deltaT p (gameEnemies gs) (gameItems gs)
         else p
       ) playersWithBot
 
@@ -473,8 +471,10 @@ handleBotRespawn deltaT p
          , playerPos = spawnPos
          , playerRespawnTimer = 0.0
          , playerAction = Idle
-         , playerWantsToShoot = False }
-     else p { playerRespawnTimer = newTimer }
+         , playerWantsToShoot = False
+         , playerDamageTaken = 0
+         , playerBotState = BotSpawn }
+    else p { playerRespawnTimer = newTimer, playerBotState = BotDead }
   | otherwise = p
 
 updatePlayer :: GameMode -> Float -> Player -> (Player, [Bullet])
@@ -495,7 +495,11 @@ updatePlayer mode deltaT p =
       newBullet = if playerWantsToShoot p && canShoot
                     then [Bullet (Position x bulletSpawnY) PlayerOwned (Just $ playerID p) bulletDirVal]
                     else []
-      finalCooldown = if playerWantsToShoot p && canShoot then 0.2 else newCooldown
+      -- Bots fire a bit slower to avoid OP
+      botFireCd = 0.35 :: Float
+      humanFireCd = 0.2 :: Float
+      fireReset = if playerType p == Bot then botFireCd else humanFireCd
+      finalCooldown = if playerWantsToShoot p && canShoot then fireReset else newCooldown
       p' = p { playerPos = newPos
              , playerWantsToShoot = False
              , playerShootCooldown = finalCooldown }
@@ -591,11 +595,22 @@ handleCollisions gs = gs { gamePlayer = scoredPlayers
     updateOne p =
       if playerID p `elem` hitPlayerIDs
         then
-          let newLives = playerLives p - 1
+          let newLives  = playerLives p - 1
               newDeaths = playerDeaths p + (if newLives <= 0 then 1 else 0)
+              newDmg    = playerDamageTaken p + 1
           in if newLives <= 0 && playerType p == Bot
-                then p { playerLives = 0, playerDeaths = newDeaths, playerRespawnTimer = 3.0 }
-                else p { playerLives = newLives, playerDeaths = newDeaths }
+               then let spawnPos = if playerID p == Player1 then Position (-100) (-250) else Position 100 (-250)
+                    in p { playerLives = 3
+                         , playerDeaths = newDeaths
+                         , playerRespawnTimer = 0.0
+                         , playerPos = spawnPos
+                         , playerAction = Idle
+                         , playerWantsToShoot = False
+                         , playerBotState = BotSpawn
+                         , playerDamageTaken = 0 }
+               else p { playerLives = newLives
+                       , playerDeaths = newDeaths
+                       , playerDamageTaken = newDmg }
         else p
 
     alivePlayers = filter keepPlayer updatedPlayers
@@ -613,7 +628,10 @@ handleCollisions gs = gs { gamePlayer = scoredPlayers
                 , map (\p -> if collidesAABB (playerPos p) (itemPos it)
                                        (playerHalf + itemHalf)
                                        (playerHalf + itemHalf)
-                               then p { playerLives = playerLives p + itemHeal it }
+                               then let healed = itemHeal it
+                                        newLives = playerLives p + healed
+                                        newDmg = max 0 (playerDamageTaken p - healed)
+                                     in p { playerLives = newLives, playerDamageTaken = newDmg }
                                else p) accPlayers )
            else (it:accItems, accPlayers)
 
@@ -691,31 +709,37 @@ collidesAABB (Position x1 y1) (Position x2 y2) halfX halfY =
 clamp :: (Ord a) => a -> a -> a -> a
 clamp val minVal maxVal = max minVal (min maxVal val)
 
--- Advanced Bot AI - with shooting cooldown, item collection, and better enemy tracking
-botLogic :: Float -> Player -> [Enemy] -> [Item] -> Player
-botLogic deltaT p enemies items =
-  let cd = playerShootCooldown p
-      newCd = max 0 (cd - deltaT)
-      
-      -- Find nearest item if health is low
-      lowHealth = playerLives p <= 2
-      nearbyItems = filter (\it -> distance (playerPos p) (itemPos it) < 200) items
-      
-      -- Decide if we should prioritize item collection
-      shouldGetItem = lowHealth && not (null nearbyItems)
-      
-      closestItem = if null nearbyItems then Nothing
-                    else let itemsWithDist = map (\it -> (it, distance (playerPos p) (itemPos it))) nearbyItems
-                             (item, _) = minimumBy (\(_, d1) (_, d2) -> compare d1 d2) itemsWithDist
-                         in Just item
-      
-  in if shouldGetItem
-       then case closestItem of
-              Nothing -> idleBot p newCd
-              Just item -> moveTowardsItem p item newCd
-       else case enemies of
-              [] -> idleBot p newCd
-              _  -> fightEnemies p enemies newCd
+-- Bot FSM logic: states and transitions
+botStepFSM :: Float -> Player -> [Enemy] -> [Item] -> Player
+botStepFSM deltaT p enemies items
+  | playerLives p <= 0 = p { playerAction = Idle
+                           , playerWantsToShoot = False
+                           , playerBotState = BotDead }
+  | otherwise =
+      let cd = max 0 (playerShootCooldown p - deltaT)
+          p0 = p { playerShootCooldown = cd, playerWantsToShoot = False }
+          lowHP = playerLives p0 < 2
+          mEnemy = closestEnemy p0 enemies
+          mItem  = closestItem p0 items
+          nextState = case playerBotState p0 of
+                        BotDead   -> BotSpawn
+                        BotSpawn  -> if lowHP then maybe BotLowHealth (const BotSeekItem) mItem else BotCombat
+                        BotCombat -> if lowHP then maybe BotLowHealth (const BotSeekItem) mItem else BotCombat
+                        BotLowHealth -> maybe BotLowHealth (const BotSeekItem) mItem
+                        BotSeekItem  -> if not lowHP || null items then BotCombat else BotSeekItem
+      in case nextState of
+           BotSeekItem ->
+             let p1 = maybe (idleBot p0 cd) (\it -> moveTowardsItem p0 it cd) mItem
+                 p2 = maybe p1 (\e -> tryShootAt p1 e) mEnemy
+             in p2 { playerBotState = BotSeekItem }
+           BotLowHealth -> case mEnemy of
+             Nothing -> (idleBot p0 cd) { playerBotState = BotLowHealth }
+             Just e  -> (fightEnemiesCautious p0 e cd) { playerBotState = BotLowHealth }
+           BotCombat -> case mEnemy of
+             Nothing -> (idleBot p0 cd) { playerBotState = BotCombat }
+             Just e  -> (fightEnemiesBalanced p0 e cd) { playerBotState = BotCombat }
+           BotSpawn -> (idleBot p0 cd) { playerBotState = BotSpawn }
+           BotDead  -> (idleBot p0 cd) { playerBotState = BotDead }
 
 -- Helper: Bot idles
 idleBot :: Player -> Float -> Player
@@ -738,30 +762,57 @@ moveTowardsItem p item cd =
         
   in p { playerAction = action, playerWantsToShoot = False, playerShootCooldown = cd }
 
--- Helper: Bot fights enemies
-fightEnemies :: Player -> [Enemy] -> Float -> Player
-fightEnemies p enemies cd =
-  let (Position px _py) = playerPos p
-      enemiesWithDist = map (\e -> (e, distance (playerPos p) (enemyPos e))) enemies
-      (closestEnemy, _) = minimumBy (\(_, d1) (_, d2) -> compare d1 d2) enemiesWithDist
-      
-      (Position ex ey) = enemyPos closestEnemy
+-- Helpers used by FSM
+closestEnemy :: Player -> [Enemy] -> Maybe Enemy
+closestEnemy p es = case es of
+  [] -> Nothing
+  _  -> let esd = map (\e -> (e, distance (playerPos p) (enemyPos e))) es
+            (emin, _) = minimumBy (\(_,d1) (_,d2) -> compare d1 d2) esd
+        in Just emin
+
+closestItem :: Player -> [Item] -> Maybe Item
+closestItem p is = case is of
+  [] -> Nothing
+  _  -> let isd = map (\i -> (i, distance (playerPos p) (itemPos i))) is
+            (imin, _) = minimumBy (\(_,d1) (_,d2) -> compare d1 d2) isd
+        in Just imin
+
+tryShootAt :: Player -> Enemy -> Player
+tryShootAt p e =
+  let (Position px py) = playerPos p
+      (Position ex ey) = enemyPos e
       dx = ex - px
-      
-      -- Calculate if we should shoot
-      horizontallyAligned = abs dx < 80
-      enemyAbove = ey > posY (playerPos p) - 30  -- Enemy above or near same level
-      canShoot = cd <= 0
-      shouldShoot = horizontallyAligned && enemyAbove && canShoot
-      
-      -- Movement logic - position under enemy
-      action 
-        | abs dx < 15 = Idle  -- Well positioned
-        | dx < -10 = MoveLeft
-        | dx > 10 = MoveRight
-        | otherwise = Idle
-        
-  in p { playerAction = action, playerWantsToShoot = shouldShoot, playerShootCooldown = cd }
+      horizontallyAligned = abs dx < 50
+      enemyAbove = ey > py - 20
+      canShoot = playerShootCooldown p <= 0
+  in p { playerWantsToShoot = horizontallyAligned && enemyAbove && canShoot }
+
+fightEnemiesBalanced :: Player -> Enemy -> Float -> Player
+fightEnemiesBalanced p e cd =
+  let Position px py = playerPos p
+      Position ex ey = enemyPos e
+      dx = ex - px
+      baseAction | abs dx < 12 = Idle
+                 | dx < 0      = MoveLeft
+                 | otherwise   = MoveRight
+      -- If the bot is above the enemy, prefer moving down to engage vertically
+      finalAction | ey + 5 < py = MoveDown
+                  | otherwise   = baseAction
+      p1 = p { playerAction = finalAction, playerShootCooldown = cd }
+  in tryShootAt p1 e
+
+fightEnemiesCautious :: Player -> Enemy -> Float -> Player
+fightEnemiesCautious p e cd =
+  let Position px py = playerPos p
+      Position ex ey = enemyPos e
+      dx = ex - px
+      baseAction | abs dx < 15 = Idle
+                 | dx < 0      = MoveLeft
+                 | otherwise   = MoveRight
+      finalAction | ey + 5 < py = MoveDown
+                  | otherwise   = baseAction
+      p1 = p { playerAction = finalAction, playerShootCooldown = cd }
+  in tryShootAt p1 e
 
 -- Helper function to calculate distance between two positions
 distance :: Position -> Position -> Float

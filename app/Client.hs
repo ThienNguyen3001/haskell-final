@@ -12,10 +12,12 @@ import System.Environment (getArgs) -- <-- THÊM DÒNG NÀY
 import Network.Socket
 import Network.Socket.ByteString (send, recv)
 import qualified Data.ByteString.Lazy as LBS
+import qualified Data.ByteString as BS
 import Data.Binary (encode, decode)
 import Control.Concurrent (forkIO)
 import Control.Monad (forever, void, when)
 import Control.Concurrent.MVar
+import Control.Exception (try, SomeException, evaluate)
 
 -- Game Modules
 import GameMes
@@ -217,9 +219,17 @@ sendAction sock pId action state = unsafePerformIO $ do
 
 receiverLoop :: Socket -> MVar GameState -> MVar Bool -> MVar PlayerID -> IO ()
 receiverLoop sock gameStateMVar gameOverMVar playerIDMVar = forever $ do
-    byteString <- recv sock 1024 
-    let sm = decode (LBS.fromStrict byteString) :: ServerMessage
-    handleMsg sm
+        -- Receive a full UDP datagram with a large enough buffer to avoid truncation
+        eBs <- try (recv sock 65535) :: IO (Either SomeException BS.ByteString)
+        case eBs of
+            Left err -> do
+                putStrLn $ "recv error: " ++ show err
+                return ()
+            Right bs -> do
+                eMsg <- try (evaluate (decode (LBS.fromStrict bs) :: ServerMessage))
+                case eMsg of
+                    Left err -> putStrLn $ "decode error: " ++ show (err :: SomeException)
+                    Right sm -> handleMsg sm
     where
         handleMsg :: ServerMessage -> IO ()
         handleMsg (Welcome pID gs) = do
