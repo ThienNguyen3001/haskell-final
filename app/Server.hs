@@ -24,7 +24,15 @@ playerSpeed, bulletSpeed, itemSpeed, entitySize :: Float
 playerSpeed = 200.0
 bulletSpeed = 400.0
 itemSpeed   = 60.0
+-- Base half-size for an entity. We'll derive per-entity half extents from this.
 entitySize  = 20.0
+
+-- Distinct half-sizes (AABB half extents) for collision purposes
+playerHalf, enemyHalf, bulletHalf, itemHalf :: Float
+playerHalf = entitySize
+enemyHalf  = entitySize
+bulletHalf = entitySize * 0.4
+itemHalf   = entitySize
 
 -- Enemy speed based on mode
 getEnemySpeed :: GameMode -> Float
@@ -565,8 +573,15 @@ handleCollisions gs = gs { gamePlayer = scoredPlayers
     (hitPlayers, remainingEnemyBullets) =
       checkBulletPlayerCollisions enemyBullets survivingPlayers
 
-    touchedPlayers = [ p | p <- survivingPlayers
-                         , any (\e -> isColliding (playerPos p) (enemyPos e) entitySize) enemies ]
+    -- Player vs Enemy touch (sum of half extents on both axes; inclusive bounds)
+    touchedPlayers =
+      [ p
+      | p <- survivingPlayers
+      , any (\e -> collidesAABB (playerPos p) (enemyPos e)
+                          (playerHalf + enemyHalf)
+                          (playerHalf + enemyHalf))
+             enemies
+      ]
 
     updatedEnemies = filter (`notElem` hitEnemies) enemies
 
@@ -590,10 +605,14 @@ handleCollisions gs = gs { gamePlayer = scoredPlayers
 
     (remainingItems, playersAfterItems) = foldr collectItem ([], alivePlayers) items
     collectItem it (accItems, accPlayers) =
-      let collidedPlayers = any (\p -> isColliding (playerPos p) (itemPos it) entitySize) accPlayers
+      let collidedPlayers = any (\p -> collidesAABB (playerPos p) (itemPos it)
+                                          (playerHalf + itemHalf)
+                                          (playerHalf + itemHalf)) accPlayers
       in if collidedPlayers
            then ( accItems
-                , map (\p -> if isColliding (playerPos p) (itemPos it) entitySize
+                , map (\p -> if collidesAABB (playerPos p) (itemPos it)
+                                       (playerHalf + itemHalf)
+                                       (playerHalf + itemHalf)
                                then p { playerLives = playerLives p + itemHeal it }
                                else p) accPlayers )
            else (it:accItems, accPlayers)
@@ -617,12 +636,17 @@ enemyDrops base hits =
 -- Collision helpers
 checkPvPCollisions :: [Bullet] -> [Player] -> ([Player], [Bullet], [Player])
 checkPvPCollisions bullets players =
-  let collisions = [(b, p) | b <- bullets
-                           , p <- players
-                           , isColliding (bulletPos b) (playerPos p) entitySize
-                           , case bulletShooter b of
-                               Just shooterId -> shooterId /= playerID p  -- Don't hit yourself
-                               Nothing -> False]
+  let collisions =
+        [ (b, p)
+        | b <- bullets
+        , p <- players
+        , collidesAABB (bulletPos b) (playerPos p)
+                       (bulletHalf + playerHalf)
+                       (bulletHalf + playerHalf)
+        , case bulletShooter b of
+            Just shooterId -> shooterId /= playerID p  -- Don't hit yourself
+            Nothing -> False
+        ]
       hitPlayers = map snd collisions
       hitBullets = map fst collisions
       remainingBullets = filter (`notElem` hitBullets) bullets
@@ -630,7 +654,14 @@ checkPvPCollisions bullets players =
 
 checkBulletEnemyCollisions :: [Bullet] -> [Enemy] -> ([Enemy], [Bullet], [Bullet])
 checkBulletEnemyCollisions bullets enemies =
-  let collisions = [(b, e) | b <- bullets, e <- enemies, isColliding (bulletPos b) (enemyPos e) entitySize]
+  let collisions =
+        [ (b, e)
+        | b <- bullets
+        , e <- enemies
+        , collidesAABB (bulletPos b) (enemyPos e)
+                       (bulletHalf + enemyHalf)
+                       (bulletHalf + enemyHalf)
+        ]
       hitEnemies = map snd collisions
       hitBullets = map fst collisions
       remainingBullets = filter (`notElem` hitBullets) bullets
@@ -638,16 +669,24 @@ checkBulletEnemyCollisions bullets enemies =
 
 checkBulletPlayerCollisions :: [Bullet] -> [Player] -> ([Player], [Bullet])
 checkBulletPlayerCollisions bullets players =
-  let collisions = [(b, p) | b <- bullets, p <- players, isColliding (bulletPos b) (playerPos p) entitySize]
+  let collisions =
+        [ (b, p)
+        | b <- bullets
+        , p <- players
+        , collidesAABB (bulletPos b) (playerPos p)
+                       (bulletHalf + playerHalf)
+                       (bulletHalf + playerHalf)
+        ]
       hitPlayers = map snd collisions
       hitBullets = map fst collisions
       remainingBullets = filter (`notElem` hitBullets) bullets
   in (hitPlayers, remainingBullets)
 
 -- Utils
-isColliding :: Position -> Position -> Float -> Bool
-isColliding (Position x1 y1) (Position x2 y2) size =
-  abs (x1 - x2) < size && abs (y1 - y2) < size
+-- AABB collision using half extents on each axis (inclusive bounds to avoid tunneling at edges)
+collidesAABB :: Position -> Position -> Float -> Float -> Bool
+collidesAABB (Position x1 y1) (Position x2 y2) halfX halfY =
+  abs (x1 - x2) <= halfX && abs (y1 - y2) <= halfY
 
 clamp :: (Ord a) => a -> a -> a -> a
 clamp val minVal maxVal = max minVal (min maxVal val)

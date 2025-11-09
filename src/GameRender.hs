@@ -117,7 +117,7 @@ drawHUD gs = pictures [topBar, playersPanel, footer]
             $ color (makeColorI 220 220 255 255)
             $ text topText
 
-        -- Players panel (scores + lives bars)
+    -- Players panel (scores only)
         playersPanel = pictures
             [ drawPlayerHud Player1 (-screenW/2 + margin) (screenH/2 - 60) gs
             , drawPlayerHud Player2 (-screenW/2 + margin) (screenH/2 - 90) gs
@@ -135,25 +135,12 @@ drawPlayerHud pid x y gs =
         Nothing -> blank
         Just p  ->
             let playerLabel = if pid == Player1 then "P1" else "P2"
-                livesText   = " Lives: " ++ show (playerLives p)
-                scoreText   = " Score: " ++ show (playerScore p)
+                livesText   = "  Lives: " ++ show (playerLives p)
+                scoreText   = "  Score: " ++ show (playerScore p)
                 lbl = playerLabel ++ livesText ++ scoreText
-                lives = playerLives p
-            in pictures [ translate x y $ scale 0.12 0.12 $ color white $ text lbl
-                        , translate (x+320) (y-4) $ drawLivesBar lives
-                        ]
+            in translate x y $ scale 0.12 0.12 $ color white $ text lbl
 
-drawLivesBar :: Int -> Picture
-drawLivesBar n =
-    let maxLives = max 1 n
-        w = 120
-        h = 10
-        filled = fromIntegral (min n maxLives) / fromIntegral maxLives
-        back = color (greyN 0.2) $ rectangleSolid w h
-        fore = color (makeColorI 0 200 90 255)
-             $ translate (-(w/2) + (w*filled)/2) 0
-             $ rectangleSolid (w*filled) h
-    in pictures [back, fore]
+-- Lives bar removed per request
 
 -- Menu rendering (mode & player selection) - Enhanced
 renderMenu :: GameMode -> PlayerID -> Picture
