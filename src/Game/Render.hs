@@ -74,7 +74,19 @@ drawPlayer mode sprite p =
         oriented = case mode of
                       PvP | playerID p == Player2 -> rotate 180 sprite
                       _                            -> sprite
-    in translate x y $ scale scalePlayer scalePlayer oriented
+        basePic = case mode of
+                    CoopBot -> color (if playerType p == Bot then makeColorI 255 180 60 255 else makeColorI 80 220 255 255) oriented
+                    Coop    -> color (if playerID p == Player1 then makeColorI 80 220 255 255 else makeColorI 255 120 120 255) oriented
+                    PvP     -> color (if playerID p == Player1 then makeColorI 120 255 120 255 else makeColorI 255 120 120 255) oriented
+                    Solo    -> color (makeColorI 80 220 255 255) oriented
+        labelStr = case mode of
+                      CoopBot -> if playerType p == Bot then "BOT" else "YOU"
+                      Coop    -> if playerID p == Player1 then "P1" else "P2"
+                      PvP     -> if playerID p == Player1 then "P1" else "P2"
+                      Solo    -> "PLAYER"
+        labelPic = translate 0 40 $ scale 0.08 0.08 $ color white $ text labelStr
+    in translate x y $ pictures [ scale scalePlayer scalePlayer basePic
+                                , labelPic ]
 
 -- Vẽ Kẻ địch (Enemy)
 drawEnemies :: Picture -> [Enemy] -> Picture
@@ -109,7 +121,7 @@ drawHUD gs = pictures [topBar, playersPanel, footer]
         modeText = case gameMode gs of
             Solo     -> "SOLO"
             CoopBot  -> "COOP+BOT"
-            Coop     -> "COOP"
+            Coop     -> "COOP+PLAYER"
             PvP      -> "PVP"
         topText = "Mode: " ++ modeText ++ "  |  Enemies Escaped: " ++ show (gameEnemiesEscaped gs) ++ "/3"
         topBar = translate (-screenW/2 + margin) (screenH/2 - margin - 18)
@@ -134,10 +146,12 @@ drawPlayerHud pid x y gs =
     case findPlayer pid gs of
         Nothing -> blank
         Just p  ->
-            let playerLabel = if pid == Player1 then "P1" else "P2"
+            let nameLabel = case playerType p of
+                                Bot   -> "Bot"
+                                Human -> if pid == Player1 then "Player 1" else "Player 2"
                 livesText   = "  Lives: " ++ show (playerLives p)
                 scoreText   = "  Score: " ++ show (playerScore p)
-                lbl = playerLabel ++ livesText ++ scoreText
+                lbl = nameLabel ++ livesText ++ scoreText
             in translate x y $ scale 0.12 0.12 $ color white $ text lbl
 
 -- Lives bar removed per request
