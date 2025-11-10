@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module GameData where
+module Game.Data where
 
 import GHC.Generics (Generic)
 import Data.Binary (Binary)

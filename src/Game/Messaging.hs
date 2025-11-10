@@ -1,8 +1,8 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module GameMes where
+module Game.Messaging where
 
-import GameData (Position, Action, GameState, PlayerID, GameMode)
+import Game.Data (Position, Action, GameState, PlayerID, GameMode)
 import GHC.Generics (Generic)
 import Data.Binary (Binary)
 

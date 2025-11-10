@@ -10,7 +10,6 @@ common common-options
         -rtsopts
         -with-rtsopts=-N
         -Wall
-
     default-language:   Haskell2010
     build-depends:
         base >= 4.7 && < 5,
@@ -25,9 +24,22 @@ common common-options
         gloss-juicy
 
 library
-    import:             common-options
-    exposed-modules:    GameData, GameMes, GameRender
-    hs-source-dirs:     src
+    import:           common-options
+    -- CẬP NHẬT exposed-modules TẠI ĐÂY
+    exposed-modules:  Game.Data,
+                      Game.Messaging,
+                      Game.Constants,
+                      Game.Logic,
+                      Game.Physics,
+                      Game.AI,
+                      Game.Core,
+                      Game.Systems,
+                      Game.Net,
+                      Client.Render,
+                      Client.Input,
+                      Client.Network,
+                      Client.State
+    hs-source-dirs:   src
 
 executable server
     import:             common-options

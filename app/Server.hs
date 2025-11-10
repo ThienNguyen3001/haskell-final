@@ -4,50 +4,23 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (forever, forM_, void, when)
 import qualified Data.Map as Map
-import Data.List (nub, partition)
+import Data.List (partition) -- Bỏ 'nub' nếu không dùng
 import Data.Binary (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
 import Network.Socket
 import Network.Socket.ByteString (recvFrom, sendTo)
 import Data.Maybe (mapMaybe, maybeToList)
 
-import GameData
-import GameMes
+import Game.Data
+import Game.Messaging
+import Game.Constants -- Import hằng số
+import Game.Logic     -- Import logic thuần túy
 
 -- Server state: game state + client address map
 data ServerState = ServerState
   { gameState :: TVar GameState
   , clients   :: TVar (Map.Map PlayerID SockAddr)
   }
-
-playerSpeed, bulletSpeed, itemSpeed, entitySize :: Float
-playerSpeed = 200.0
-bulletSpeed = 400.0
-itemSpeed   = 60.0
--- Base half-size for an entity. We'll derive per-entity half extents from this.
-entitySize  = 20.0
-
--- Distinct half-sizes (AABB half extents) for collision purposes
-playerHalf, enemyHalf, bulletHalf, itemHalf :: Float
-playerHalf = entitySize
-enemyHalf  = entitySize
-bulletHalf = entitySize * 0.4
-itemHalf   = entitySize
-
--- Enemy speed based on mode
-getEnemySpeed :: GameMode -> Float
-getEnemySpeed Solo    = 100.0  -- Normal speed for solo (harder)
-getEnemySpeed CoopBot = 50.0   -- Slower for coop with bot (easier)
-getEnemySpeed Coop    = 100.0  -- Normal speed for 2 players
-getEnemySpeed PvP     = 75.0   -- Slightly slower in PvP since players fight each other
-
-screenWidth, screenHeight :: Float
-screenWidth = 800
-screenHeight = 600
-
--- Initial game state
-initialGameState :: GameState
-initialGameState = GameState [] [] [] 0 0 0 0 0 5.0 2.0 [] False Coop 0
 
 main :: IO ()
 main = withSocketsDo $ do
@@ -238,29 +211,25 @@ gameLoop sock state = forever $ do
         anyHumanDead = not (null humans) && any ((<= 0) . playerLives) humans
         tooManyEscaped = gameEnemiesEscaped gs >= 3
         
-        -- Bot deaths don't cause game over, only human deaths
         isGameOver = case gameMode gs of
-          PvP -> anyHumanDead  -- In PvP, any human death ends game
-          _   -> allHumansDead || tooManyEscaped  -- In Coop/Solo, all humans must die OR too many escaped
+          PvP -> anyHumanDead
+          _   -> allHumansDead || tooManyEscaped
     
-    -- If game is over, don't update - just return current state
     if isGameOver
       then return gs
       else do
-        -- Check if game can start based on mode requirements
-        -- Trong chế độ 2 người chơi (Coop, PvP) không cần đợi cả 2 người
-        -- Người chơi đầu tiên có thể bắt đầu chơi ngay
         let humanCount = length $ filter ((== Human) . playerType) (gamePlayer gs)
             canPlay = case gameMode gs of
-                        Solo    -> humanCount >= 1  -- Solo: 1 player
-                        CoopBot -> humanCount >= 1  -- CoopBot: 1 player + bot
-                        Coop    -> humanCount >= 1  -- Coop: có ít nhất 1 player (không cần đợi 2)
-                        PvP     -> humanCount >= 1  -- PvP: có ít nhất 1 player (không cần đợi 2)
+                        Solo    -> humanCount >= 1
+                        CoopBot -> humanCount >= 1
+                        Coop    -> humanCount >= 1
+                        PvP     -> humanCount >= 1
         
         if not canPlay
-          then return gs  -- Don't update game if requirements not met
+          then return gs
           else do
-            let (tickedGs, bullets) = runGameLogic deltaT gs
+            -- GỌI HÀM PURE LOGIC
+            let (tickedGs, bullets) = stepGame deltaT gs
             let finalGs = tickedGs { gameBullets = gameBullets tickedGs ++ bullets }
             writeTVar (gameState state) finalGs
             return finalGs
@@ -270,12 +239,10 @@ gameLoop sock state = forever $ do
       anyHumanDead = not (null humans) && any ((<= 0) . playerLives) humans
       tooManyEscaped = gameEnemiesEscaped updatedGameState >= 3
       
-      -- Game over conditions depend on mode (bot deaths don't count)
       isGameOver = case gameMode updatedGameState of
-        PvP -> anyHumanDead  -- In PvP, any human death = game over (the other wins)
-        _   -> allHumansDead || tooManyEscaped  -- In other modes, all humans must die OR too many escaped
+        PvP -> anyHumanDead
+        _   -> allHumansDead || tooManyEscaped
       
-      -- Detect newly eliminated humans (their lives just hit 0 but game not over yet in Coop)
       eliminatedPlayers = [ playerID p | p <- humans, playerLives p <= 0 ]
       baseMsg 
         | isGameOver = GameOver False
@@ -284,12 +251,13 @@ gameLoop sock state = forever $ do
   
   -- Broadcast base update / game over
   forM_ (Map.elems clientMap) $ \addr -> sendTo sock baseEncoded addr
-  -- If not fully game over and we're in Coop or PvP, notify eliminations individually
+  
   when (not (null eliminatedPlayers) && not isGameOver && gameMode updatedGameState `elem` [Coop, PvP]) $ do
     forM_ eliminatedPlayers $ \pid -> do
       let elimMsg = PlayerEliminated pid
       let emBytes = LBS.toStrict $ encode elimMsg
       forM_ (Map.elems clientMap) $ \addr -> sendTo sock emBytes addr
+  
   threadDelay (floor (deltaT * 1000 * 1000))
   
 
@@ -358,474 +326,3 @@ handlePlayerAction state pID action = atomically $ do
                      _     -> p { playerAction = action }
               else p
   writeTVar (gameState state) (gs { gamePlayer = map upd (gamePlayer gs) })
-
--- Core game logic
-runGameLogic :: Float -> GameState -> (GameState, [Bullet])
-runGameLogic deltaT gs = (finalGameState, newPlayerBullets ++ newEnemyBullets)
-  where
-    -- Ensure bot exists in CoopBot mode only, remove bot in Solo mode
-    -- Bot gets the PlayerID that is not taken by human player
-    playersWithBot = case gameMode gs of
-      Solo    ->
-        let humans = filter ((== Human) . playerType) (gamePlayer gs)
-            pickOne =
-              case humans of
-                [] -> []
-                hs ->
-                  let mP1 = filter ((== Player1) . playerID) hs
-                  in if not (null mP1) then [head mP1] else [head hs]
-        in pickOne  -- Keep only one human in solo
-      CoopBot ->
-        let hasBot   = any (== Bot) (map playerType (gamePlayer gs))
-            humanIDs = map playerID $ filter ((== Human) . playerType) (gamePlayer gs)
-            botID    = if Player1 `elem` humanIDs then Player2 else Player1
-            botPos   = if botID == Player1 then Position (-100) (-250) else Position 100 (-250)
-        in if hasBot
-             then gamePlayer gs
-             else Player botID botPos 3 0 0 Idle False Bot 0.0 0.0 0 BotSpawn : gamePlayer gs
-      _       -> filter ((== Human) . playerType) (gamePlayer gs)  -- Remove bots in Coop/PvP
-
-    -- Let bot decide simple actions (use deltaT for shoot cooldown)
-    -- Don't control dead bots waiting to respawn
-    botControlledPlayers = map (\p -> 
-      if playerType p == Bot
-        then botStepFSM deltaT p (gameEnemies gs) (gameItems gs)
-        else p
-      ) playersWithBot
-
-    -- Item spawn timer: spawn at random X near top and let them fall
-    spawnTimer' = gameSpawnTimer gs - deltaT
-    (itemsSpawned, nextSpawnTimer) =
-      if spawnTimer' <= 0
-        then let seed = gameEnemiesSpawned gs + gameLevel gs + length (gameItems gs)
-                 xI = randX seed
-                 yI = (screenHeight / 2) - 40
-             in (Item (Position xI yI) 1 : gameItems gs, 5.0)
-        else (gameItems gs, spawnTimer')
-    -- make items fall
-    itemsAfterSpawn = updateItems deltaT itemsSpawned
-
-    -- Players update and bullets fired
-    (updatedPlayers, newPlayerBullets) = updatePlayers (gameMode gs) deltaT botControlledPlayers
-
-    -- Enemy spawn logic via timer - continuous spawning
-    enemySpawnTimer' = gameEnemySpawnTimer gs - deltaT
-    
-    -- Disable enemy spawning entirely in PvP mode
-    (enemiesAfterSpawn, nextEnemySpawnTimer, newSpawnCount) =
-      if gameMode gs == PvP
-         then ([], gameEnemySpawnTimer gs, 0)
-         else if enemySpawnTimer' <= 0
-           then let nSpawned = gameEnemiesSpawned gs
-                    xSpawn = randX nSpawned
-                    eType  = if (nSpawned `mod` 5) == 0 then BigEnemy else SmallEnemy
-                    hp     = if eType == BigEnemy then (2 + gameLevel gs `div` 3) else 1
-                    cd0    = if eType == BigEnemy then 0.5 else 1.0
-                    newEnemy = Enemy (Position xSpawn 200) eType Idle Alive hp cd0
-                in (newEnemy : gameEnemies gs, max 0.8 (2.0 - fromIntegral (gameLevel gs) * 0.05), 1)
-           else (gameEnemies gs, enemySpawnTimer', 0)
-
-    -- Enemies update and bullets fired, track escaped enemies
-    (updatedEnemies, newEnemyBullets, escapedCount) =
-      if gameMode gs == PvP
-         then ([], [], 0)
-         else updateEnemiesWithMode (gameMode gs) deltaT enemiesAfterSpawn
-
-    -- Move existing bullets
-    updatedOldBullets = updateBullets deltaT (gameBullets gs)
-
-    -- Intermediate state before collisions
-    -- Increase level gradually every 10 spawns
-    letLevel = if (gameEnemiesSpawned gs `mod` 10) == 9 then gameLevel gs + 1 else gameLevel gs
-    tempGameState = gs { gamePlayer = updatedPlayers
-                       , gameEnemies = updatedEnemies
-                       , gameBullets = updatedOldBullets
-                       , gameItems = itemsAfterSpawn
-                       , gameSpawnTimer = nextSpawnTimer
-                       , gameEnemySpawnTimer = nextEnemySpawnTimer
-                       , gameEnemiesSpawned = gameEnemiesSpawned gs + newSpawnCount
-                       , gameLevel = letLevel
-                       , gameEnemiesEscaped = gameEnemiesEscaped gs + escapedCount
-                       }
-
-    -- Resolve collisions and scoring
-    finalGameState = handleCollisions tempGameState
-
--- Updates
-updatePlayers :: GameMode -> Float -> [Player] -> ([Player], [Bullet])
-updatePlayers mode deltaT players =
-  let (ps, bs) = unzip (map (updatePlayer mode deltaT) players)
-      -- Handle bot respawning
-      respawnedPs = map (handleBotRespawn deltaT) ps
-  in (respawnedPs, concat bs)
-
--- Handle bot respawn timer
-handleBotRespawn :: Float -> Player -> Player
-handleBotRespawn deltaT p
-  | playerType p == Bot && playerLives p <= 0 && playerRespawnTimer p > 0 =
-      let newTimer = playerRespawnTimer p - deltaT
-   in if newTimer <= 0
-     then -- Respawn bot with full health at spawn position (PvP not used for bots)
-       let spawnPos = if playerID p == Player1 then Position (-100) (-250) else Position 100 (-250)
-       in p { playerLives = 3
-         , playerPos = spawnPos
-         , playerRespawnTimer = 0.0
-         , playerAction = Idle
-         , playerWantsToShoot = False
-         , playerDamageTaken = 0
-         , playerBotState = BotSpawn }
-    else p { playerRespawnTimer = newTimer, playerBotState = BotDead }
-  | otherwise = p
-
-updatePlayer :: GameMode -> Float -> Player -> (Player, [Bullet])
-updatePlayer mode deltaT p =
-  let (dx, dy) = case playerAction p of
-        MoveUp    -> (0, playerSpeed * deltaT)
-        MoveDown  -> (0, -playerSpeed * deltaT)
-        MoveLeft  -> (-playerSpeed * deltaT, 0)
-        MoveRight -> (playerSpeed * deltaT, 0)
-        _         -> (0, 0)
-      Position x y = playerPos p
-      newPos = Position (clamp (x + dx) (-screenWidth/2) (screenWidth/2))
-                        (clamp (y + dy) (-screenHeight/2) (screenHeight/2))
-      newCooldown = max 0 (playerShootCooldown p - deltaT)
-      canShoot = newCooldown <= 0
-      bulletDirVal = if mode == PvP && playerID p == Player2 then (-1) else 1
-      bulletSpawnY = if bulletDirVal == 1 then y + entitySize else y - entitySize
-      newBullet = if playerWantsToShoot p && canShoot
-                    then [Bullet (Position x bulletSpawnY) PlayerOwned (Just $ playerID p) bulletDirVal]
-                    else []
-      -- Bots fire a bit slower to avoid OP
-      botFireCd = 0.35 :: Float
-      humanFireCd = 0.2 :: Float
-      fireReset = if playerType p == Bot then botFireCd else humanFireCd
-      finalCooldown = if playerWantsToShoot p && canShoot then fireReset else newCooldown
-      p' = p { playerPos = newPos
-             , playerWantsToShoot = False
-             , playerShootCooldown = finalCooldown }
-  in (p', newBullet)
-
--- Update enemies with mode-based speed
--- Update enemies with mode-based speed and track escaped
-updateEnemiesWithMode :: GameMode -> Float -> [Enemy] -> ([Enemy], [Bullet], Int)
-updateEnemiesWithMode mode deltaT enemies =
-  let enemySpeed = getEnemySpeed mode
-      process e =
-        let (Position x y) = enemyPos e
-            newPos = Position x (y - enemySpeed * deltaT)
-            cd'    = enemyFireCd e - deltaT
-        in if cd' <= 0
-              then ( e { enemyPos = newPos
-                        , enemyFireCd = resetCd (enemyType e) }
-                   , [Bullet (Position x (y - entitySize)) EnemyOwned Nothing (-1)] )
-              else ( e { enemyPos = newPos, enemyFireCd = cd' }
-                   , [] )
-      (es, bs) = unzip (map process enemies)
-      -- Separate escaped from in-bounds
-      (esInBounds, esEscaped) = partition (\e -> let Position _ y = enemyPos e 
-                                                 in y > (-screenHeight/2 - entitySize)) es
-  in (esInBounds, concat bs, length esEscaped)
-
-resetCd :: EnemyType -> Float
-resetCd SmallEnemy = 1.2
-resetCd BigEnemy   = 0.7
-
-updateBullets :: Float -> [Bullet] -> [Bullet]
-updateBullets deltaT = mapMaybe $ \b ->
-  let (Position x y) = bulletPos b
-      dy = case bulletOwner b of
-             PlayerOwned -> bulletSpeed * deltaT * bulletDir b
-             EnemyOwned  -> -bulletSpeed * deltaT
-      newPos = Position x (y + dy)
-  in if abs (posY newPos) > screenHeight / 2
-       then Nothing
-       else Just (b { bulletPos = newPos })
-
--- Update items: fall down and cull off-screen
-updateItems :: Float -> [Item] -> [Item]
-updateItems dt = mapMaybe $ \it ->
-  let Position x y = itemPos it
-      y' = y - itemSpeed * dt
-      newPos = Position x y'
-  in if y' < (-screenHeight / 2 - entitySize)
-        then Nothing
-        else Just (it { itemPos = newPos })
-
--- Collisions and scoring
-handleCollisions :: GameState -> GameState
-handleCollisions gs = gs { gamePlayer = scoredPlayers
-                         , gameEnemies = updatedEnemies
-                         , gameBullets = remainingPlayerBullets ++ remainingEnemyBullets
-                         , gameItems   = remainingItems ++ enemyDrops (gameEnemiesSpawned gs) hitEnemies }
-  where
-    players = gamePlayer gs
-    enemies = gameEnemies gs
-    bullets = gameBullets gs
-    items   = gameItems gs
-    mode    = gameMode gs
-
-    playerBullets = filter ((== PlayerOwned) . bulletOwner) bullets
-    enemyBullets  = filter ((== EnemyOwned) . bulletOwner) bullets
-
-    (hitByPvP, remainingPvPBullets, survivingPlayers) =
-      if mode == PvP
-        then checkPvPCollisions playerBullets players
-        else ([], playerBullets, players)
-
-    (hitEnemies, hitPlayerBullets, remainingPlayerBullets) =
-      checkBulletEnemyCollisions remainingPvPBullets enemies
-    (hitPlayers, remainingEnemyBullets) =
-      checkBulletPlayerCollisions enemyBullets survivingPlayers
-
-    -- Player vs Enemy touch (sum of half extents on both axes; inclusive bounds)
-    touchedPlayers =
-      [ p
-      | p <- survivingPlayers
-      , any (\e -> collidesAABB (playerPos p) (enemyPos e)
-                          (playerHalf + enemyHalf)
-                          (playerHalf + enemyHalf))
-             enemies
-      ]
-
-    updatedEnemies = filter (`notElem` hitEnemies) enemies
-
-    hitPlayerIDs = nub (map playerID hitPlayers ++ map playerID touchedPlayers ++ map playerID hitByPvP)
-
-    updatedPlayers = map updateOne survivingPlayers
-    updateOne p =
-      if playerID p `elem` hitPlayerIDs
-        then
-          let newLives  = playerLives p - 1
-              newDeaths = playerDeaths p + (if newLives <= 0 then 1 else 0)
-              newDmg    = playerDamageTaken p + 1
-          in if newLives <= 0 && playerType p == Bot
-               then let spawnPos = if playerID p == Player1 then Position (-100) (-250) else Position 100 (-250)
-                    in p { playerLives = 3
-                         , playerDeaths = newDeaths
-                         , playerRespawnTimer = 0.0
-                         , playerPos = spawnPos
-                         , playerAction = Idle
-                         , playerWantsToShoot = False
-                         , playerBotState = BotSpawn
-                         , playerDamageTaken = 0 }
-               else p { playerLives = newLives
-                       , playerDeaths = newDeaths
-                       , playerDamageTaken = newDmg }
-        else p
-
-    alivePlayers = filter keepPlayer updatedPlayers
-    keepPlayer p = case playerType p of
-                     Human -> True
-                     Bot   -> playerLives p > 0 || playerRespawnTimer p > 0
-
-    (remainingItems, playersAfterItems) = foldr collectItem ([], alivePlayers) items
-    collectItem it (accItems, accPlayers) =
-      let collidedPlayers = any (\p -> collidesAABB (playerPos p) (itemPos it)
-                                          (playerHalf + itemHalf)
-                                          (playerHalf + itemHalf)) accPlayers
-      in if collidedPlayers
-           then ( accItems
-                , map (\p -> if collidesAABB (playerPos p) (itemPos it)
-                                       (playerHalf + itemHalf)
-                                       (playerHalf + itemHalf)
-                               then let healed = itemHeal it
-                                        newLives = playerLives p + healed
-                                        newDmg = max 0 (playerDamageTaken p - healed)
-                                     in p { playerLives = newLives, playerDamageTaken = newDmg }
-                               else p) accPlayers )
-           else (it:accItems, accPlayers)
-
-    shooterHits = foldr countHit Map.empty hitPlayerBullets
-    countHit b acc = case bulletShooter b of
-                       Just pid -> Map.insertWith (+) pid 1 acc
-                       Nothing  -> acc
-
-    scoredPlayers = map addScore playersAfterItems
-    addScore p = p { playerScore = playerScore p + Map.findWithDefault 0 (playerID p) shooterHits }
-
--- Drop items at enemy death positions with 30% chance, deterministic by spawn count
-enemyDrops :: Int -> [Enemy] -> [Item]
-enemyDrops base hits =
-  let tagged = zip [base..] hits
-      keep i = (i * 1664525 + 1013904223) `mod` 10 < 3
-      toItem (_,e) = Item (enemyPos e) 1
-  in map toItem (filter (keep . fst) tagged)
-
--- Collision helpers
-checkPvPCollisions :: [Bullet] -> [Player] -> ([Player], [Bullet], [Player])
-checkPvPCollisions bullets players =
-  let collisions =
-        [ (b, p)
-        | b <- bullets
-        , p <- players
-        , collidesAABB (bulletPos b) (playerPos p)
-                       (bulletHalf + playerHalf)
-                       (bulletHalf + playerHalf)
-        , case bulletShooter b of
-            Just shooterId -> shooterId /= playerID p  -- Don't hit yourself
-            Nothing -> False
-        ]
-      hitPlayers = map snd collisions
-      hitBullets = map fst collisions
-      remainingBullets = filter (`notElem` hitBullets) bullets
-  in (hitPlayers, remainingBullets, players)
-
-checkBulletEnemyCollisions :: [Bullet] -> [Enemy] -> ([Enemy], [Bullet], [Bullet])
-checkBulletEnemyCollisions bullets enemies =
-  let collisions =
-        [ (b, e)
-        | b <- bullets
-        , e <- enemies
-        , collidesAABB (bulletPos b) (enemyPos e)
-                       (bulletHalf + enemyHalf)
-                       (bulletHalf + enemyHalf)
-        ]
-      hitEnemies = map snd collisions
-      hitBullets = map fst collisions
-      remainingBullets = filter (`notElem` hitBullets) bullets
-  in (hitEnemies, hitBullets, remainingBullets)
-
-checkBulletPlayerCollisions :: [Bullet] -> [Player] -> ([Player], [Bullet])
-checkBulletPlayerCollisions bullets players =
-  let collisions =
-        [ (b, p)
-        | b <- bullets
-        , p <- players
-        , collidesAABB (bulletPos b) (playerPos p)
-                       (bulletHalf + playerHalf)
-                       (bulletHalf + playerHalf)
-        ]
-      hitPlayers = map snd collisions
-      hitBullets = map fst collisions
-      remainingBullets = filter (`notElem` hitBullets) bullets
-  in (hitPlayers, remainingBullets)
-
--- Utils
--- AABB collision using half extents on each axis (inclusive bounds to avoid tunneling at edges)
-collidesAABB :: Position -> Position -> Float -> Float -> Bool
-collidesAABB (Position x1 y1) (Position x2 y2) halfX halfY =
-  abs (x1 - x2) <= halfX && abs (y1 - y2) <= halfY
-
-clamp :: (Ord a) => a -> a -> a -> a
-clamp val minVal maxVal = max minVal (min maxVal val)
-
--- Bot FSM logic: states and transitions
-botStepFSM :: Float -> Player -> [Enemy] -> [Item] -> Player
-botStepFSM deltaT p enemies items
-  | playerLives p <= 0 = p { playerAction = Idle
-                           , playerWantsToShoot = False
-                           , playerBotState = BotDead }
-  | otherwise =
-      let cd = max 0 (playerShootCooldown p - deltaT)
-          p0 = p { playerShootCooldown = cd, playerWantsToShoot = False }
-          lowHP = playerLives p0 < 2
-          mEnemy = closestEnemy p0 enemies
-          mItem  = closestItem p0 items
-          nextState = case playerBotState p0 of
-                        BotDead   -> BotSpawn
-                        BotSpawn  -> if lowHP then maybe BotLowHealth (const BotSeekItem) mItem else BotCombat
-                        BotCombat -> if lowHP then maybe BotLowHealth (const BotSeekItem) mItem else BotCombat
-                        BotLowHealth -> maybe BotLowHealth (const BotSeekItem) mItem
-                        BotSeekItem  -> if not lowHP || null items then BotCombat else BotSeekItem
-      in case nextState of
-           BotSeekItem ->
-             let p1 = maybe (idleBot p0 cd) (\it -> moveTowardsItem p0 it cd) mItem
-                 p2 = maybe p1 (\e -> tryShootAt p1 e) mEnemy
-             in p2 { playerBotState = BotSeekItem }
-           BotLowHealth -> case mEnemy of
-             Nothing -> (idleBot p0 cd) { playerBotState = BotLowHealth }
-             Just e  -> (fightEnemiesCautious p0 e cd) { playerBotState = BotLowHealth }
-           BotCombat -> case mEnemy of
-             Nothing -> (idleBot p0 cd) { playerBotState = BotCombat }
-             Just e  -> (fightEnemiesBalanced p0 e cd) { playerBotState = BotCombat }
-           BotSpawn -> (idleBot p0 cd) { playerBotState = BotSpawn }
-           BotDead  -> (idleBot p0 cd) { playerBotState = BotDead }
-
--- Helper: Bot idles
-idleBot :: Player -> Float -> Player
-idleBot p cd = p { playerAction = Idle, playerWantsToShoot = False, playerShootCooldown = cd }
-
--- Helper: Bot moves towards item
-moveTowardsItem :: Player -> Item -> Float -> Player
-moveTowardsItem p item cd =
-  let (Position px py) = playerPos p
-      (Position ix iy) = itemPos item
-      dx = ix - px
-      dy = iy - py
-      
-      -- Move towards item
-      action
-        | abs dx < 10 && abs dy < 10 = Idle  -- Close enough
-        | abs dx > abs dy = if dx < 0 then MoveLeft else MoveRight
-        | dy < 0 = MoveDown
-        | otherwise = MoveUp
-        
-  in p { playerAction = action, playerWantsToShoot = False, playerShootCooldown = cd }
-
--- Helpers used by FSM
-closestEnemy :: Player -> [Enemy] -> Maybe Enemy
-closestEnemy p es = case es of
-  [] -> Nothing
-  _  -> let esd = map (\e -> (e, distance (playerPos p) (enemyPos e))) es
-            (emin, _) = minimumBy (\(_,d1) (_,d2) -> compare d1 d2) esd
-        in Just emin
-
-closestItem :: Player -> [Item] -> Maybe Item
-closestItem p is = case is of
-  [] -> Nothing
-  _  -> let isd = map (\i -> (i, distance (playerPos p) (itemPos i))) is
-            (imin, _) = minimumBy (\(_,d1) (_,d2) -> compare d1 d2) isd
-        in Just imin
-
-tryShootAt :: Player -> Enemy -> Player
-tryShootAt p e =
-  let (Position px py) = playerPos p
-      (Position ex ey) = enemyPos e
-      dx = ex - px
-      horizontallyAligned = abs dx < 50
-      enemyAbove = ey > py - 20
-      canShoot = playerShootCooldown p <= 0
-  in p { playerWantsToShoot = horizontallyAligned && enemyAbove && canShoot }
-
-fightEnemiesBalanced :: Player -> Enemy -> Float -> Player
-fightEnemiesBalanced p e cd =
-  let Position px py = playerPos p
-      Position ex ey = enemyPos e
-      dx = ex - px
-      baseAction | abs dx < 12 = Idle
-                 | dx < 0      = MoveLeft
-                 | otherwise   = MoveRight
-      -- If the bot is above the enemy, prefer moving down to engage vertically
-      finalAction | ey + 5 < py = MoveDown
-                  | otherwise   = baseAction
-      p1 = p { playerAction = finalAction, playerShootCooldown = cd }
-  in tryShootAt p1 e
-
-fightEnemiesCautious :: Player -> Enemy -> Float -> Player
-fightEnemiesCautious p e cd =
-  let Position px py = playerPos p
-      Position ex ey = enemyPos e
-      dx = ex - px
-      baseAction | abs dx < 15 = Idle
-                 | dx < 0      = MoveLeft
-                 | otherwise   = MoveRight
-      finalAction | ey + 5 < py = MoveDown
-                  | otherwise   = baseAction
-      p1 = p { playerAction = finalAction, playerShootCooldown = cd }
-  in tryShootAt p1 e
-
--- Helper function to calculate distance between two positions
-distance :: Position -> Position -> Float
-distance (Position x1 y1) (Position x2 y2) = 
-    sqrt ((x2 - x1) ** 2 + (y2 - y1) ** 2)
-
-minimumBy :: (a -> a -> Ordering) -> [a] -> a
-minimumBy cmp (x:xs) = foldl (\acc y -> if cmp y acc == LT then y else acc) x xs
-minimumBy _ [] = error "minimumBy: empty list"
-
--- Simple deterministic pseudo-random X based on spawn index
-randX :: Int -> Float
-randX n =
-  let f = fromIntegral ((n * 1103515245 + 12345) `mod` 2147483647) / 2147483647.0
-      range = (screenWidth / 2 - 50)
-  in (-range) + f * (2 * range)

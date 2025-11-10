@@ -1,6 +1,6 @@
-module GameRender where
+module Render where
 
-import GameData
+import Data
 import Graphics.Gloss
 
 -- Screen and layout constants
