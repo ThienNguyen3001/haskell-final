@@ -50,6 +50,17 @@ inputHandler event state =
                 let quitMsg = PlayerQuit pId
                 void $ NBS.send sock (LBS.toStrict $ encode quitMsg)
                 exitSuccess
+            -- Toggle pause for offline modes (Solo, CoopBot)
+            EventKey (Char 'p') Down _ _ ->
+                let mode = gameMode (gameState state)
+                in if mode == Solo || mode == CoopBot
+                      then unsafePerformIO $ do
+                        let paused = gamePaused (gameState state)
+                        let msg = if paused then ResumeRequest else PauseRequest
+                        void $ NBS.send sock (LBS.toStrict $ encode msg)
+                        let gs' = (gameState state) { gamePaused = not paused }
+                        pure state { gameState = gs' }
+                      else state
             -- Return to menu (offline modes only)
             EventKey (Char 'r') Down _ _ ->
                 let mode = gameMode (gameState state)

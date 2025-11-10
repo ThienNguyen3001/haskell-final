@@ -26,7 +26,7 @@ screenWidth = 800
 screenHeight = 600
 
 initialGameState :: GameState
-initialGameState = GameState [] [] [] 0 0 0 0 0 5.0 2.0 [] False Coop 0
+initialGameState = GameState [] [] [] 0 0 0 0 0 5.0 2.0 [] False Coop 0 False
 
 -- Từ GameRender.hs
 margin :: Float

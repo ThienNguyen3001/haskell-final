@@ -28,14 +28,24 @@ data GameSprites = GameSprites
 
 -- Chữ ký hàm Render chỉ cần nhận vào các sprite và GameState tổng thể
 render :: GameSprites -> GameState -> Picture
-render sprites gs = pictures
-    [ drawPlayfieldBg
-    , drawItems     (itemSprite sprites)   (gameItems gs)
-    , drawEnemies   (enemySprite sprites)  (gameEnemies gs)
-    , drawPlayers   (gameMode gs) (playerSprite sprites) (gamePlayer gs)
-    , drawBullets   (bulletSprite sprites) (gameBullets gs)
-    , drawHUD       gs
-    ]
+render sprites gs = pictures $ base ++ overlay
+    where
+        base =
+            [ drawPlayfieldBg
+            , drawItems     (itemSprite sprites)   (gameItems gs)
+            , drawEnemies   (enemySprite sprites)  (gameEnemies gs)
+            , drawPlayers   (gameMode gs) (playerSprite sprites) (gamePlayer gs)
+            , drawBullets   (bulletSprite sprites) (gameBullets gs)
+            , drawHUD       gs
+            ]
+        overlay = if gamePaused gs
+                                then [ pauseOverlay ]
+                                else []
+        pauseOverlay = pictures
+            [ color (makeColorI 0 0 0 160) $ rectangleSolid (screenWidth*1.2) (screenHeight*1.2)
+            , translate (-90) 10 $ scale 0.3 0.3 $ color (makeColorI 255 255 180 255) $ text "PAUSED"
+            , translate (-210) (-60) $ scale 0.12 0.12 $ color (makeColorI 220 220 220 255) $ text "Press P to resume | R: Menu | Q: Quit"
+            ]
 
 -- Game Over screen
 renderGameOver :: GameState -> Picture
@@ -126,7 +136,7 @@ drawHUD gs = pictures [topBar, playersPanel, footer]
         footer = translate (-screenWidth/2 + margin) (-screenHeight/2 + margin)
             $ scale 0.1 0.1
             $ color (makeColorI 200 200 200 255)
-            $ text "WASD move, Space shoot | R: Back to Menu (offline) | Q: Quit"
+            $ text "WASD move, Space shoot | P: Pause (offline) | R: Back to Menu (offline) | Q: Quit"
 
 drawPlayerHud :: PlayerID -> Float -> Float -> GameState -> Picture
 drawPlayerHud pid x y gs =

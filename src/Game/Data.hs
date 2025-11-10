@@ -133,5 +133,6 @@ data GameState = GameState
   , isShooting         :: Bool          -- có đang bắn không
   , gameMode           :: GameMode      -- chế độ chơi (Solo/CoopBot/Coop/PvP)
   , gameEnemiesEscaped :: Int           -- số enemy đã rơi xuống (thua khi >= 3)
+  , gamePaused         :: Bool          -- tạm dừng (chỉ áp dụng cho offline modes)
   } deriving (Show, Eq, Generic)
 instance Binary GameState

@@ -85,6 +85,16 @@ receiverLoop sock state = forever $ do
           return (not already, chosen, gs)
         when shouldSend $ do
           void $ sendTo sock (LBS.toStrict $ encode (Welcome pid gsSnap)) clientAddr
+    PauseRequest            -> atomically $ do
+      modifyTVar' (gameState state) $ \gs ->
+        if gameMode gs `elem` [Solo, CoopBot]
+          then gs { gamePaused = True }
+          else gs
+    ResumeRequest           -> atomically $ do
+      modifyTVar' (gameState state) $ \gs ->
+        if gameMode gs `elem` [Solo, CoopBot]
+          then gs { gamePaused = False }
+          else gs
     _                       -> return ()
 
 -- Helper to reset round when mode changes while preserving connected human players
@@ -117,24 +127,25 @@ handleSetMode state mode = modifyTVar' (gameState state) $ \gs ->
       humans = filter ((== Human) . playerType) (gamePlayer gs)
       resetPlayers = map resetHuman humans
   in gs { gameMode = mode
-    , gamePlayer = case mode of
-        Solo ->
-          let pickOne = case resetPlayers of
-                [] -> []
-                hs -> let mP1 = filter ((== Player1) . playerID) hs
-                      in if not (null mP1) then [head mP1] else [head hs]
-          in pickOne
-        _ -> resetPlayers
-    , gameEnemies = []
-    , gameItems = []
-    , gameBullets = []
-    , gameEnemiesLeft = 0
-    , gameEnemiesSpawned = 0
-    , gameSpawnTimer = 5.0
-    , gameEnemySpawnTimer = 2.0
-    , gameLevel = 0
-    , gameEnemiesEscaped = 0
-    , isShooting = False }
+        , gamePlayer = case mode of
+            Solo ->
+              let pickOne = case resetPlayers of
+                    [] -> []
+                    hs -> let mP1 = filter ((== Player1) . playerID) hs
+                          in if not (null mP1) then [head mP1] else [head hs]
+              in pickOne
+            _ -> resetPlayers
+        , gameEnemies = []
+        , gameItems = []
+        , gameBullets = []
+        , gameEnemiesLeft = 0
+        , gameEnemiesSpawned = 0
+        , gameSpawnTimer = 5.0
+        , gameEnemySpawnTimer = 2.0
+        , gameLevel = 0
+        , gameEnemiesEscaped = 0
+        , isShooting = False
+        , gamePaused = False }
 
 -- Variant that keeps the player who sent the request when switching to Solo
 handleSetModeFromAddr :: ServerState -> GameMode -> SockAddr -> STM ()
@@ -191,7 +202,8 @@ handleSetModeFromAddr state mode addr = do
           , gameEnemySpawnTimer = 2.0
           , gameLevel = 0
           , gameEnemiesEscaped = 0
-          , isShooting = False }
+          , isShooting = False
+          , gamePaused = False }
 
 -- Game loop (~60 FPS)
 gameLoop :: Socket -> ServerState -> IO ()
@@ -225,7 +237,9 @@ gameLoop sock state = forever $ do
                         Coop    -> humanCount >= 1
                         PvP     -> humanCount >= 1
         
-        if not canPlay
+        if gamePaused gs
+          then return gs
+          else if not canPlay
           then return gs
           else do
             -- GỌI HÀM PURE LOGIC

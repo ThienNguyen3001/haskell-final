@@ -19,6 +19,9 @@ data ClientMessage
   | PlayerRespawn PlayerID              -- hồi sinh
   | PlayerQuit PlayerID                 -- rời khỏi game
   | SetMode GameMode                    -- đặt chế độ chơi (Coop | Solo)
+  -- Pause/Resume requests (ignored by server for online; used by client in offline modes)
+  | PauseRequest                        -- yêu cầu tạm dừng (offline)
+  | ResumeRequest                       -- yêu cầu tiếp tục (offline)
   deriving (Show, Eq, Generic)
 
 instance Binary ClientMessage 
