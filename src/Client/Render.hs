@@ -126,7 +126,7 @@ drawHUD gs = pictures [topBar, playersPanel, footer]
         footer = translate (-screenWidth/2 + margin) (-screenHeight/2 + margin)
             $ scale 0.1 0.1
             $ color (makeColorI 200 200 200 255)
-            $ text "WASD move, Space shoot | 1..4 modes | R: Menu (offline) | Q: Quit"
+            $ text "WASD move, Space shoot | R: Back to Menu (offline) | Q: Quit"
 
 drawPlayerHud :: PlayerID -> Float -> Float -> GameState -> Picture
 drawPlayerHud pid x y gs =
