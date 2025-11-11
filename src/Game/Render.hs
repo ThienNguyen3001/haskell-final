@@ -45,10 +45,32 @@ renderGameOver gs = pictures
     , translate (-250) (-40) $ scale 0.15 0.15 $ color white $ text (scoresText gs)
     , translate (-250) (-100) $ scale 0.12 0.12 $ color (makeColorI 200 200 200 255) $ text "Enter: Menu  |  Q: Quit"
     ]
-    where
-        reason = if gameEnemiesEscaped gs >= 3
-                 then "Too many enemies escaped!"
-                 else "All players defeated!"
+        where
+                reason =
+                    if gameEnemiesEscaped gs >= 3 then
+                        "Too many enemies escaped!"
+                    else case gameMode gs of
+                        PvP  -> pvpReason
+                        Coop -> coopReason
+                        _    -> defaultReason
+
+                -- Helper flags
+                p1Alive = maybe False ((>0) . playerLives) (findPlayer Player1 gs)
+                p2Alive = maybe False ((>0) . playerLives) (findPlayer Player2 gs)
+
+                -- Mode-specific reasons
+                pvpReason
+                    | p1Alive && not p2Alive = "P2 defeated — P1 wins!"
+                    | p2Alive && not p1Alive = "P1 defeated — P2 wins!"
+                    | not p1Alive && not p2Alive = "Both players defeated!"
+                    | otherwise = "Match over"
+
+                coopReason
+                    | not p1Alive && p2Alive = "Player 1 defeated!"
+                    | not p2Alive && p1Alive = "Player 2 defeated!"
+                    | otherwise               = "All players defeated!"
+
+                defaultReason = "Defeated!"
 
 scoresText :: GameState -> String
 scoresText st = "Score P1: "
