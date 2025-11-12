@@ -6,9 +6,12 @@
 ├── app
 │   └── Client.hs
 |   └── Server.hs
+|   └── Main.hs
 │
 ├── src                          
 │   └── GameData.hs
+|   └── GameMes.hs
+|   └── GameRender.hs
 └── .gitignore
 └── haskell-game-server.cabal
 └── README.md
