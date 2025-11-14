@@ -207,8 +207,8 @@ renderMenu selMode selPlayer = pictures
     
     -- Mode selection
     , translate (-150) 80  $ scale 0.15 0.15 $ color (makeColorI 255 210 100 255) $ text "Select Mode:"
-    , translate (-150) 50  $ selectable (selMode == Solo) "Solo - 1 Player Only (Hard)"
-    , translate (-150) 20  $ selectable (selMode == CoopBot) "Coop+Bot - 1 Player + AI (Easy)"
+    , translate (-150) 50  $ selectable (selMode == Solo) "Solo - 1 Player Only"
+    , translate (-150) 20  $ selectable (selMode == CoopBot) "Coop+Bot - 1 Player + AI"
     , translate (-150) (-10) $ selectable (selMode == Coop) "Coop - 2 Players vs Enemies"
     , translate (-150) (-40) $ selectable (selMode == PvP) "PvP - 2 Players Fight!"
     
