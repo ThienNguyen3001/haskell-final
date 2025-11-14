@@ -17,6 +17,7 @@ module Client.Render (
 import Game.Data
 import Game.Constants -- Import hằng số
 import Graphics.Gloss
+import Control.Parallel.Strategies (parMap, rseq)
 
 -- TẠO MỘT KIỂU DỮ LIỆU ĐỂ GÓI CÁC SPRITE LẠI
 data GameSprites = GameSprites
@@ -106,7 +107,7 @@ drawPlayfieldBg =
 
 -- Vẽ Phi thuyền (Player)
 drawPlayers :: GameMode -> Picture -> [Player] -> Picture
-drawPlayers mode sprite ps = pictures (map (drawPlayer mode sprite) ps)
+drawPlayers mode sprite ps = pictures (parMap rseq (drawPlayer mode sprite) ps)
 
 drawPlayer :: GameMode -> Picture -> Player -> Picture
 drawPlayer mode sprite p =
@@ -131,7 +132,7 @@ drawPlayer mode sprite p =
 
 -- Vẽ Kẻ địch (Enemy)
 drawEnemies :: Picture -> [Enemy] -> Picture
-drawEnemies sprite es = pictures (map (drawEnemy sprite) es)
+drawEnemies sprite es = pictures (parMap rseq (drawEnemy sprite) es)
 
 drawEnemy :: Picture -> Enemy -> Picture
 drawEnemy sprite e =
@@ -140,14 +141,14 @@ drawEnemy sprite e =
 
 -- Vẽ Đường đạn (Bullet)
 drawBullets :: Picture -> [Bullet] -> Picture
-drawBullets sprite bs = pictures (map (drawBullet sprite) bs)
+drawBullets sprite bs = pictures (parMap rseq (drawBullet sprite) bs)
 
 drawBullet :: Picture -> Bullet -> Picture
 drawBullet sprite b = let (Position x y) = bulletPos b in translate x y $ scale scaleBullet scaleBullet sprite
 
 -- Vẽ Vật phẩm (Item)
 drawItems :: Picture -> [Item] -> Picture
-drawItems sprite is = pictures (map (drawItem sprite) is)
+drawItems sprite is = pictures (parMap rseq (drawItem sprite) is)
 
 drawItem :: Picture -> Item -> Picture
 drawItem sprite i = let (Position x y) = itemPos i in translate x y $ scale scaleItem scaleItem sprite
